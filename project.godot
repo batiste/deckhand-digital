@@ -16,8 +16,7 @@ run/main_scene="res://scenes/game/game.tscn"
 config/features=PackedStringArray("4.3", "GL Compatibility")
 config/icon="res://icon.png"
 boot_splash/bg_color=Color(0.04, 0.03, 0.02, 1)
-boot_splash/image="res://assets/new-logo.png"
-boot_splash/fullsize=false
+boot_splash/show_image=false
 
 [display]
 

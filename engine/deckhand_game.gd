@@ -193,6 +193,18 @@ func score(p: int) -> int:
 		total += card_score(p, id)
 	return total
 
+## Where the score comes from: printed VP of supply (crew) and Infamy cards,
+## and the banner multipliers.
+func score_breakdown(p: int) -> Dictionary:
+	var out := {"crew": 0, "infamy": 0, "multipliers": 0}
+	var banners := raised_banners(p)
+	for id in players[p].crew:
+		var card := CardDB.get_card(id)
+		out["infamy" if card.kind == "infamy" else "crew"] += card.vp
+		if card.multiplier != null:
+			out.multipliers += card.multiplier.vp * banners[card.multiplier.banner]
+	return out
+
 static func rank_for(points: int) -> String:
 	for entry in RANKS:
 		if points >= entry[0]:

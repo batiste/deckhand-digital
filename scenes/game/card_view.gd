@@ -6,7 +6,7 @@ signal clicked(view: CardView)
 signal hovered(view: CardView)
 signal unhovered(view: CardView)
 
-enum Mark { NONE, SELECTED, PAYMENT, DISABLED, HIGHLIGHT }
+enum Mark { NONE, SELECTED, PAYMENT, DISABLED, HIGHLIGHT, FREE }
 
 const CARD_ASPECT := 1632.0 / 2220.0
 const SUPPLY_BACK := "res://backs/back-supply.png"
@@ -15,6 +15,7 @@ const MARK_COLORS := {
 	Mark.SELECTED: Color(1.0, 0.8, 0.25),
 	Mark.PAYMENT: Color(0.95, 0.35, 0.3),
 	Mark.HIGHLIGHT: Color(0.45, 0.85, 1.0),
+	Mark.FREE: Color(0.45, 0.9, 0.4),
 }
 
 static var _textures := {}
@@ -34,7 +35,14 @@ var shadow := 0.0:
 		_shadow.modulate.a = value
 		_shadow.visible = value > 0.01
 
+## Keyboard / pointer focus: a bright ring around the card.
+var focused := false:
+	set(value):
+		focused = value
+		_focus_ring.visible = value
+
 var _shadow := Panel.new()
+var _focus_ring := Panel.new()
 var _texture_rect := TextureRect.new()
 var _border := Panel.new()
 var _caption := Label.new()
@@ -104,6 +112,19 @@ func _init() -> void:
 	_caption.add_theme_font_size_override("font_size", 16)
 	add_child(_caption)
 
+	var ring := StyleBoxFlat.new()
+	ring.draw_center = false
+	ring.border_color = Color(1.0, 0.95, 0.75)
+	ring.set_border_width_all(3)
+	ring.set_expand_margin_all(4)
+	ring.shadow_color = Color(1.0, 0.8, 0.35, 0.6)
+	ring.shadow_size = 10
+	_focus_ring.add_theme_stylebox_override("panel", ring)
+	_focus_ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_focus_ring.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_focus_ring.visible = false
+	add_child(_focus_ring)
+
 	mouse_entered.connect(func() -> void: hovered.emit(self))
 	mouse_exited.connect(func() -> void: unhovered.emit(self))
 	resized.connect(_on_resized)
@@ -128,6 +149,7 @@ func _on_resized() -> void:
 	(_texture_rect.material as ShaderMaterial).set_shader_parameter("corner_radius_px", size.x * 0.055)
 	(_border.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
 	(_shadow.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
+	(_focus_ring.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06) + 4)
 
 func _refresh_mark() -> void:
 	if not is_inside_tree():

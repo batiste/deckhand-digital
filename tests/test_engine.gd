@@ -30,6 +30,12 @@ func test_payment() -> void:
 	check(Payment.evaluate(cost, [], [13, 14, 15], false).ok, "3 cards pay 3 coins")
 	check(Payment.evaluate(cost, [["cs"]], [13, 14], false).ok, "crew silver + 2 cards")
 	check(Payment.evaluate(cost, [], [13], true).ok, "windfall (2 coins) + 1 card")
+	# Bitter Vintage: a revealed parrot, then the windfall and 3 cards as two pairs.
+	var vintage := ["g", "p", "s"]
+	check(not Payment.evaluate(vintage, [], [19, 13, 14, 15], false).ok, "4 cards can't pay gun, parrot and skull")
+	check(Payment.evaluate(vintage, [], [19, 13, 14, 15], true).ok, "the windfall pairs with a card for any resource")
+	var with_windfall := Payment.plan(vintage, [], [19, 13, 14, 15], func(_id: int) -> float: return 1.0, 1.0)
+	check(with_windfall.ok and with_windfall.windfall, "plan pairs the windfall")
 	# Hypnotic Frogs: 4 parrots. Tropical Messenger (19) produces parrot when revealed.
 	var frogs: Array = ["p", "p", "p", "p"]
 	check(Payment.evaluate(frogs, [["p"], ["p"]], [19, 99], false).ok, "2 crew parrots + 2 revealed parrot cards")

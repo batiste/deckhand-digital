@@ -163,6 +163,7 @@ A player may produce resources by discarding hand cards face down to the common 
 | 2 cards | any 1 resource |
 
 Infamy cards have no production, so a revealed Windfall produces nothing extra.
+The Windfall is a hand card, so it can also be one of the 2 cards discarded for any 1 resource.
 
 Windfall discard special rule:
 - when Windfall is discarded, either
