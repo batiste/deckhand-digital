@@ -27,7 +27,14 @@ var mark := Mark.NONE:
 		mark = value
 		_refresh_mark()
 var interactive := true
+## Opacity of the drop shadow under the card (0 = none), for lifted cards.
+var shadow := 0.0:
+	set(value):
+		shadow = value
+		_shadow.modulate.a = value
+		_shadow.visible = value > 0.01
 
+var _shadow := Panel.new()
 var _texture_rect := TextureRect.new()
 var _border := Panel.new()
 var _caption := Label.new()
@@ -54,6 +61,17 @@ static func make(id: int, card_size: Vector2, show_face: bool = true) -> CardVie
 
 func _init() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	var drop := StyleBoxFlat.new()
+	drop.bg_color = Color(0, 0, 0, 0.35)
+	drop.shadow_color = Color(0, 0, 0, 0.55)
+	drop.shadow_size = 16
+	drop.shadow_offset = Vector2(0, 10)
+	_shadow.add_theme_stylebox_override("panel", drop)
+	_shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_shadow.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_shadow.visible = false
+	add_child(_shadow)
+
 	_texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	_texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -79,11 +97,11 @@ func _init() -> void:
 	_caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_caption.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	_caption.offset_top = -26.0
+	_caption.offset_top = -30.0
 	_caption.add_theme_color_override("font_color", Color.WHITE)
 	_caption.add_theme_color_override("font_outline_color", Color.BLACK)
 	_caption.add_theme_constant_override("outline_size", 6)
-	_caption.add_theme_font_size_override("font_size", 14)
+	_caption.add_theme_font_size_override("font_size", 16)
 	add_child(_caption)
 
 	mouse_entered.connect(func() -> void: hovered.emit(self))
@@ -109,6 +127,7 @@ func _on_resized() -> void:
 	(_texture_rect.material as ShaderMaterial).set_shader_parameter("rect_size", size)
 	(_texture_rect.material as ShaderMaterial).set_shader_parameter("corner_radius_px", size.x * 0.055)
 	(_border.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
+	(_shadow.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
 
 func _refresh_mark() -> void:
 	if not is_inside_tree():

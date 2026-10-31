@@ -15,8 +15,12 @@ const CREW_CARD := Vector2(88, 120)
 const OPP_CARD := Vector2(50, 68)
 const OVERLAY_CARD := Vector2(180, 245)
 const ZOOM_CARD := Vector2(340, 462)
+## Global size multipliers for text and inline icons.
+const TEXT_SCALE := 1.15
+const ICON_SCALE := 1.25
 
 const WOOD := "res://assets/ui/wood.jpg"
+const ROUNDED_SHADER := preload("res://scenes/game/rounded_panel.gdshader")
 const PARCHMENT := "res://assets/ui/parchment.jpg"
 const LOGO := "res://assets/new-logo.png"
 const MENU_ART := "res://assets/art/kraken.jpg"
@@ -81,11 +85,26 @@ var _zoom_card: CardView
 var _zoom_text: RichTextLabel
 var _sfx: Sfx
 
+# Card motion: views are rebuilt on every refresh, so poses are captured before
+# and replayed by CardMotion after layout.
+var _motion: CardMotion
+var _motion_gen := 0
+var _card_views: Array[CardView] = []
+var _hand_pose := {} # card id -> {position, rotation, scale} of the last hand layout
+var _pile_views := {} # "supply" / "infamy" / "discard" -> CardView
+var _opp_panels := {} # player -> PanelContainer
+var _refresh_queued := false
+var _unplayed := {} # snapshot whose animation has not started yet
+var _shown := {} # player -> {vp, banners} last displayed, to animate gains
+
 func _ready() -> void:
 	CardDB.ensure_loaded()
 	_sfx = Sfx.new()
 	add_child(_sfx)
 	_build_ui()
+	_motion = CardMotion.new()
+	_motion.layer = 5
+	add_child(_motion)
 	_open_menu()
 	var splash := SplashScreen.new()
 	splash.finished.connect(func() -> void: _sfx.play("bell", -6.0))
@@ -105,11 +124,16 @@ func _new_game() -> void:
 			seats.append({"name": names[i], "bot": true})
 	game = DeckhandGame.new()
 	game.setup(seats, -1, {"solo_variant": settings.solo, "beginner_draft": settings.beginner})
-	game.changed.connect(_refresh)
+	game.changed.connect(_queue_refresh)
 	game.logged.connect(_append_log)
 	game.event.connect(_on_game_event)
 	_log.clear()
 	_decision = null
+	_motion.settle()
+	_card_views.clear()
+	_hand_pose.clear()
+	_unplayed = {}
+	_shown.clear()
 	game.start()
 
 func _process(delta: float) -> void:
@@ -396,7 +420,7 @@ func _build_zoom() -> void:
 func _make_theme() -> Theme:
 	var t := Theme.new()
 	t.default_font = load(FONT_REGULAR)
-	t.default_font_size = 16
+	t.default_font_size = _fs(16)
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = Color(0.22, 0.17, 0.1)
 	normal.border_color = Color(0.75, 0.58, 0.3)
@@ -433,7 +457,7 @@ func _panel(color: Color = PANEL_BG) -> PanelContainer:
 	panel.add_theme_stylebox_override("panel", style)
 	return panel
 
-## Dark-stained wood, for dialogs and the action bar.
+## Dark-stained wood with rounded corners, for dialogs and the action bar.
 func _wood_panel(tint: Color = Color(0.5, 0.36, 0.24)) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var style := StyleBoxTexture.new()
@@ -441,6 +465,10 @@ func _wood_panel(tint: Color = Color(0.5, 0.36, 0.24)) -> PanelContainer:
 	style.modulate_color = tint
 	style.set_content_margin_all(18)
 	panel.add_theme_stylebox_override("panel", style)
+	var rounded := ShaderMaterial.new()
+	rounded.shader = ROUNDED_SHADER
+	panel.material = rounded
+	panel.resized.connect(func() -> void: rounded.set_shader_parameter("size", panel.size))
 	return panel
 
 ## Full-rect image that covers its area (cropping as needed).
@@ -456,7 +484,7 @@ func _cover(path: String) -> TextureRect:
 func _label(text: String, font_size: int = 16, color: Color = Color(0.92, 0.94, 0.97), bold: bool = false) -> Label:
 	var label := Label.new()
 	label.text = text
-	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_font_size_override("font_size", _fs(font_size))
 	label.add_theme_color_override("font_color", color)
 	if bold:
 		label.add_theme_font_override("font", load(FONT_BOLD))
@@ -465,8 +493,8 @@ func _label(text: String, font_size: int = 16, color: Color = Color(0.92, 0.94, 
 func _rich(font_size: int) -> RichTextLabel:
 	var rich := RichTextLabel.new()
 	rich.bbcode_enabled = true
-	rich.add_theme_font_size_override("normal_font_size", font_size)
-	rich.add_theme_font_size_override("bold_font_size", font_size)
+	rich.add_theme_font_size_override("normal_font_size", _fs(font_size))
+	rich.add_theme_font_size_override("bold_font_size", _fs(font_size))
 	rich.add_theme_font_override("bold_font", load(FONT_BOLD))
 	rich.size_flags_horizontal = SIZE_EXPAND_FILL
 	rich.size_flags_vertical = SIZE_EXPAND_FILL
@@ -483,6 +511,7 @@ func _button(text: String, callback: Callable, enabled: bool = true) -> Button:
 func _card(id: int, card_size: Vector2, face_up: bool = true) -> CardView:
 	var view := CardView.make(id, card_size, face_up)
 	view.hovered.connect(_on_card_hovered)
+	_card_views.append(view)
 	view.unhovered.connect(_on_card_unhovered)
 	return view
 
@@ -491,8 +520,11 @@ func _clear(node: Node) -> void:
 		node.remove_child(child)
 		child.queue_free()
 
+static func _fs(size: int) -> int:
+	return roundi(size * TEXT_SCALE)
+
 static func _img(name: String, size: int = 20) -> String:
-	return "[img=%d]%s%s.png[/img]" % [size, ICONS, name]
+	return "[img=%d]%s%s.png[/img]" % [roundi(size * ICON_SCALE), ICONS, name]
 
 static func _res(token: String, size: int = 20) -> String:
 	return _img("res-" + token, size)
@@ -505,7 +537,14 @@ func _who(p: int) -> String:
 
 # --- Rendering --------------------------------------------------------------
 
+## The game can change several times in one action; render once per frame.
+func _queue_refresh() -> void:
+	if not _refresh_queued:
+		_refresh_queued = true
+		_refresh.call_deferred()
+
 func _refresh() -> void:
+	_refresh_queued = false
 	if game == null:
 		return
 	var decision: Variant = game.pending.get(HUMAN)
@@ -514,6 +553,7 @@ func _refresh() -> void:
 		_reset_input()
 	# Hovered cards may be rebuilt below without an exit event.
 	_zoom_panel.visible = false
+	var snapshot := _capture_cards()
 	_render_top()
 	_render_row()
 	_render_piles()
@@ -522,6 +562,7 @@ func _refresh() -> void:
 	_render_hand()
 	_render_action()
 	_render_overlay()
+	_animate_cards(snapshot)
 
 func _reset_input() -> void:
 	_build_card = -1
@@ -609,6 +650,7 @@ func _render_piles() -> void:
 		var id: int = 1 if spec[3] else 13
 		var view := CardView.make(id, PILE_CARD, false)
 		view.interactive = false
+		_pile_views[spec[0].to_lower()] = view
 		view.set_caption(str(spec[1]))
 		if spec[1] == 0:
 			view.modulate.a = 0.25
@@ -617,12 +659,14 @@ func _render_piles() -> void:
 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		v.add_child(caption)
 
-func _player_summary(p: int, icon_size: int) -> String:
+## `fresh` banners (just raised) have their count in gold.
+func _player_summary(p: int, icon_size: int, fresh: Array = []) -> String:
 	var banners := game.raised_banners(p)
 	var parts: Array[String] = []
 	for b in CardDB.BANNERS:
 		if banners[b] > 0:
-			parts.append("%s%d" % [_banner(b, icon_size + 2), banners[b]])
+			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
+			parts.append("%s%s" % [_banner(b, icon_size + 2), count])
 	var banner_text := " ".join(parts) if not parts.is_empty() else "[color=#8a96a6]no banners[/color]"
 	var prod: Array[String] = []
 	for slot: Array in game.crew_production_slots(p):
@@ -646,6 +690,7 @@ func _render_opponents() -> void:
 		var pl: Dictionary = game.players[p]
 		var panel := _panel()
 		_opponents_box.add_child(panel)
+		_opp_panels[p] = panel
 		var v := VBoxContainer.new()
 		v.add_theme_constant_override("separation", 4)
 		panel.add_child(v)
@@ -656,13 +701,14 @@ func _render_opponents() -> void:
 			status = "  [color=#8a96a6](passed)[/color]"
 		elif game.pending.has(p):
 			status = "  [color=#8a96a6](thinking…)[/color]"
-		head.text = "[b]%s[/b]%s\n[color=#ffd36b]%d VP[/color]   ·   hand %d   ·   %s" % [
-			_who(p), status, game.score(p), game.hand_size(p),
+		var template := "[b]%s[/b]%s\n[color=#ffd36b]{vp} VP[/color]   ·   hand %d   ·   %s" % [
+			_who(p), status, game.hand_size(p),
 			"windfall ✓" if pl.windfall >= 0 else "no windfall"]
 		v.add_child(head)
+		var fresh := _show_gains(p, head, template, Vector2(0.0, head.get_theme_font("normal_font").get_height(_fs(16))), 0.75)
 		var summary := _rich(13)
 		summary.fit_content = true
-		summary.text = _player_summary(p, 15).replace("     ", "\n")
+		summary.text = _player_summary(p, 15, fresh).replace("     ", "\n")
 		v.add_child(summary)
 		var flow := HFlowContainer.new()
 		flow.add_theme_constant_override("h_separation", 3)
@@ -673,7 +719,10 @@ func _render_opponents() -> void:
 
 func _render_crew() -> void:
 	var pl: Dictionary = game.players[HUMAN]
-	_crew_stats.text = "[b]Your crew[/b]   [color=#ffd36b]%d VP[/color]     %s" % [game.score(HUMAN), _player_summary(HUMAN, 18)]
+	var prefix := "Your crew   "
+	var offset := Vector2(load(FONT_BOLD).get_string_size(prefix, HORIZONTAL_ALIGNMENT_LEFT, -1, _fs(16)).x, 0.0)
+	var fresh := _show_gains(HUMAN, _crew_stats, "[b]%s[/b][color=#ffd36b]{vp} VP[/color]     {summary}" % prefix, offset)
+	_crew_stats.text = _crew_stats.text.replace("{summary}", _player_summary(HUMAN, 18, fresh))
 	_clear(_crew_flow)
 	for id in pl.crew:
 		var view := _card(id, CREW_CARD)
@@ -761,15 +810,27 @@ func _layout_hand() -> void:
 		view.z_index = i + (100 if hovered else 0)
 		var target := Vector2(x0 + i * step, 26.0 + absf(t) * 12.0 - lift)
 		var angle := 0.0 if hovered else t * minf(n, 9) * 0.9
+		var scale_to := Vector2.ONE * (1.06 if hovered else 1.0)
+		var shadow := 0.9 if hovered else 0.35
 		if not view.has_meta("placed"):
-			# Fresh views (the hand is rebuilt on every refresh) snap into place.
+			# Fresh views (the hand is rebuilt on every refresh) continue from
+			# where the same card was, or snap into place.
 			view.set_meta("placed", true)
-			view.position = target
-			view.rotation_degrees = angle
-			continue
+			var pose: Dictionary = _hand_pose.get(view.card_id, {})
+			if pose.is_empty():
+				view.position = target
+				view.rotation_degrees = angle
+				view.shadow = shadow
+				continue
+			view.position = pose.position
+			view.rotation_degrees = pose.rotation
+			view.scale = pose.scale
+			view.shadow = pose.shadow
 		var tween := view.create_tween().set_parallel().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-		tween.tween_property(view, "position", target, 0.18)
-		tween.tween_property(view, "rotation_degrees", angle, 0.18)
+		tween.tween_property(view, "position", target, 0.22)
+		tween.tween_property(view, "rotation_degrees", angle, 0.22)
+		tween.tween_property(view, "scale", scale_to, 0.22)
+		tween.tween_property(view, "shadow", shadow, 0.22)
 
 func _set_buttons(specs: Array) -> void:
 	_clear(_buttons)
@@ -990,6 +1051,216 @@ func _render_game_over() -> void:
 	_overlay_body.move_child(art, 0)
 	_overlay_buttons([["View the table", func() -> void: _overlay.visible = false], ["New game", _open_menu]])
 
+# --- Score feedback ---------------------------------------------------------
+
+## Writes `template` ({vp} = score) into `label`, counting up from the score
+## shown last time and floating the gains ("+2 VP", new banners) above the
+## score at `offset` from the label. Returns the banners just raised.
+func _show_gains(p: int, label: RichTextLabel, template: String, offset: Vector2, size: float = 1.0) -> Array:
+	var vp := game.score(p)
+	var banners := game.raised_banners(p)
+	var before: Dictionary = _shown.get(p, {"vp": vp, "banners": banners})
+	_shown[p] = {"vp": vp, "banners": banners}
+	var fresh: Array = []
+	for b: String in banners:
+		if banners[b] > before.banners.get(b, 0):
+			fresh.append(b)
+	if label.has_meta("vp_tween"):
+		(label.get_meta("vp_tween") as Tween).kill()
+		label.remove_meta("vp_tween")
+	label.text = template.replace("{vp}", str(vp))
+	if vp != before.vp:
+		var tween := label.create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+		label.set_meta("vp_tween", tween)
+		tween.tween_method(func(value: float) -> void:
+			label.text = label.text.replace(label.get_meta("vp_text", ""), "%d VP" % roundi(value))
+			label.set_meta("vp_text", "%d VP" % roundi(value)),
+			float(before.vp), float(vp), 0.7)
+		label.text = template.replace("{vp}", str(before.vp))
+		label.set_meta("vp_text", "%d VP" % before.vp)
+	var gain := ""
+	if vp > before.vp:
+		gain = "+%d VP" % (vp - before.vp)
+	for b: String in fresh:
+		gain += "   +%s" % _banner(b, 20)
+	if not gain.is_empty():
+		_float_text(label, offset, gain, size)
+	return fresh
+
+## A gold note that rises from `node` (+ `offset`) and fades away.
+func _float_text(node: Control, offset: Vector2, text: String, size: float) -> void:
+	var note := _rich(roundi(18 * size))
+	note.fit_content = true
+	note.autowrap_mode = TextServer.AUTOWRAP_OFF
+	note.mouse_filter = MOUSE_FILTER_IGNORE
+	note.add_theme_color_override("default_color", GOLD)
+	note.add_theme_color_override("font_outline_color", Color(0.08, 0.05, 0.02))
+	note.add_theme_constant_override("outline_size", 6)
+	note.text = "[b]%s[/b]" % text
+	note.modulate.a = 0.0
+	_motion.add_child(note)
+	# Wait for the (possibly new) label to be laid out.
+	await get_tree().process_frame
+	if not is_instance_valid(node) or not node.is_inside_tree():
+		note.queue_free()
+		return
+	note.size = note.get_combined_minimum_size()
+	var start := node.get_global_rect().position + offset - Vector2(0.0, note.size.y * 0.6)
+	note.position = start
+	note.pivot_offset = Vector2(0.0, note.size.y / 2.0)
+	var tween := note.create_tween()
+	tween.tween_property(note, "modulate:a", 1.0, 0.2)
+	tween.parallel().tween_property(note, "scale", Vector2.ONE, 0.35).from(Vector2(0.7, 0.7)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(note, "position:y", start.y - 34.0, 1.6).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	tween.parallel().tween_property(note, "modulate:a", 0.0, 0.6).set_delay(1.0)
+	tween.tween_callback(note.queue_free)
+
+# --- Card motion ------------------------------------------------------------
+
+## Records where every visible card is before the table is rebuilt.
+func _capture_cards() -> Dictionary:
+	if not _unplayed.is_empty():
+		# Rebuilt again before the last changes were laid out: animate from
+		# the earlier state instead.
+		_card_views.clear()
+		return _unplayed
+	var flying := _motion.in_flight()
+	var poses := {}
+	for id: int in flying:
+		poses[id] = flying[id].pose
+	for view in _card_views:
+		if is_instance_valid(view) and view.is_inside_tree() and view.is_visible_in_tree() and not poses.has(view.card_id):
+			var pose := CardMotion.pose_of(view, view.face_up)
+			pose.zone = _zone_of(view)
+			poses[view.card_id] = pose
+	_card_views.clear()
+	_hand_pose.clear()
+	for view in _hand_views:
+		if is_instance_valid(view) and view.has_meta("placed"):
+			_hand_pose[view.card_id] = {"position": view.position, "rotation": view.rotation_degrees, "scale": view.scale, "shadow": view.shadow}
+	var anchors := {}
+	for key: String in _pile_views:
+		if is_instance_valid(_pile_views[key]) and _pile_views[key].is_inside_tree():
+			anchors[key] = CardMotion.pose_of(_pile_views[key], false)
+	for p: int in _opp_panels:
+		if is_instance_valid(_opp_panels[p]) and _opp_panels[p].is_inside_tree():
+			var rect: Rect2 = _opp_panels[p].get_global_rect()
+			anchors[p] = {"center": rect.get_center(), "size": OPP_CARD, "rotation": 0.0, "face_up": false}
+	return {"poses": poses, "anchors": anchors, "flying": flying}
+
+func _zone_of(view: CardView) -> String:
+	if view.get_parent() == _hand_area:
+		return "hand"
+	if _overlay.is_ancestor_of(view):
+		return "overlay"
+	if _row_box.is_ancestor_of(view):
+		return "row"
+	if _crew_flow.is_ancestor_of(view):
+		return "crew"
+	return "opponents"
+
+## Screen direction draft cards travel in: left with the wind clockwise.
+func _pass_direction() -> float:
+	return -1.0 if game.wind() == 1 else 1.0
+
+## Flies cards that moved, appeared or vanished since `snapshot`.
+func _animate_cards(snapshot: Dictionary) -> void:
+	_motion_gen += 1
+	var generation := _motion_gen
+	var poses: Dictionary = snapshot.poses
+	var anchors: Dictionary = snapshot.anchors
+	var flying: Dictionary = snapshot.flying
+	var present := {}
+	var moving: Array[CardView] = []
+	var continuing: Array[CardView] = []
+	for view in _card_views:
+		if not view.is_visible_in_tree():
+			continue
+		present[view.card_id] = true
+		var old: Dictionary = poses.get(view.card_id, {})
+		var zone := _zone_of(view)
+		var flight: Dictionary = flying.get(view.card_id, {})
+		if not flight.is_empty() and flight.zone == zone and flight.face_up == view.face_up:
+			# Still heading to the same place: keep that flight going.
+			continuing.append(view)
+			view.modulate.a = 0.0
+			continue
+		if not old.is_empty() and old.get("zone") == zone and old.face_up == view.face_up:
+			continue # Stayed put (the hand animates itself from _hand_pose).
+		moving.append(view)
+		view.modulate.a = 0.0 # Until the ghost lands; avoids a one-frame pop.
+	var draft_passed := false
+	for id: int in poses:
+		if not present.has(id):
+			draft_passed = draft_passed or (poses[id].get("zone") == "overlay" and game.phase == DeckhandGame.Phase.DRAFT)
+			_animate_vanished(id, poses[id], anchors)
+	# Containers lay out new cards on the next frame.
+	_unplayed = snapshot
+	await get_tree().process_frame
+	if generation != _motion_gen:
+		return
+	_unplayed = {}
+	# On the first refresh the decks were not on the table yet.
+	for key: String in _pile_views:
+		if not anchors.has(key) and is_instance_valid(_pile_views[key]):
+			anchors[key] = CardMotion.pose_of(_pile_views[key], false)
+	for view in continuing:
+		if not is_instance_valid(view) or not view.is_inside_tree():
+			continue
+		if _motion.is_flying(view.card_id):
+			_motion.retarget(view.card_id, view, CardMotion.pose_of(view, view.face_up))
+		else:
+			view.modulate.a = 1.0
+	var queued := {}
+	for view in moving:
+		if not is_instance_valid(view) or not view.is_inside_tree():
+			continue
+		var to := CardMotion.pose_of(view, view.face_up)
+		var old: Dictionary = poses.get(view.card_id, {})
+		var zone := _zone_of(view)
+		if not old.is_empty():
+			_motion.fly(view.card_id, old, to, {"target": view, "zone": zone})
+			continue
+		if zone == "overlay" and draft_passed:
+			# The next draft hand slides in from the neighbour passing it.
+			var from := to.duplicate()
+			from.center -= Vector2(_pass_direction() * 320.0, 0.0)
+			_motion.fly(view.card_id, from, to, {"target": view, "zone": zone, "fade_in": true})
+		elif zone in ["hand", "overlay", "row"]:
+			# Dealt from its deck, face down, turning over on the way.
+			var deck := "infamy" if CardDB.is_infamy(view.card_id) else "supply"
+			var count: int = queued.get(deck, 0)
+			queued[deck] = count + 1
+			if anchors.has(deck):
+				_motion.fly(view.card_id, anchors[deck], to, {"target": view, "zone": zone, "delay": count * 0.07})
+			else:
+				view.modulate.a = 1.0
+		else:
+			var from := to.duplicate()
+			from.size *= 0.8
+			_motion.fly(view.card_id, from, to, {"target": view, "zone": zone, "fade_in": true, "duration": 0.3})
+
+func _animate_vanished(id: int, from: Dictionary, anchors: Dictionary) -> void:
+	var to := from.duplicate()
+	var holder := -1
+	for p in range(1, game.player_count()):
+		if game.players[p].hand.has(id) or game.players[p].draft_hand.has(id):
+			holder = p
+	if game.discard_pile.has(id) and anchors.has("discard"):
+		to = anchors.discard.duplicate()
+		to.face_up = from.face_up
+	elif from.get("zone") == "overlay" and game.phase == DeckhandGame.Phase.DRAFT:
+		to.center += Vector2(_pass_direction() * 320.0, 0.0)
+	elif game.supply.has(id) and anchors.has("supply"):
+		to = anchors.supply
+	elif game.infamy_deck.has(id) and anchors.has("infamy"):
+		to = anchors.infamy
+	elif holder >= 0 and anchors.has(holder):
+		to = anchors[holder]
+	else:
+		to.size *= 0.8
+	_motion.fly(id, from, to, {"fade_out": true})
+
 # --- Input ------------------------------------------------------------------
 
 ## Game moments -> sounds. Opponents' actions play a little quieter.
@@ -1008,7 +1279,6 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"pass":
 			_sfx.play("pass", volume)
 		"build":
-			_sfx.play("card_flip", volume)
 			if info.paid > 0:
 				_sfx.play("coin", volume - 2.0)
 		"crew":
