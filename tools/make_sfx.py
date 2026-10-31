@@ -123,18 +123,73 @@ def fanfare(notes, step, last):
     return mix(*parts, offsets=offsets)
 
 
-def main():
-    # Cards
-    save("card_flip", noise(0.09, 0.002, 0.022, low=0.3, high=0.6, sweep_to=0.15), 0.55)
-    save("card_deal", mix(*[noise(0.12, 0.03, 0.04, low=0.2, high=0.35) for _ in range(3)], offsets=[0, 0.07, 0.14]), 0.45)
-    save("card_place", mix(tone(150, 0.18, 0.002, 0.05, glide_to=70), gain(noise(0.03, 0.001, 0.006, high=0.5), 0.6)), 0.7)
+def lowpass(track, cutoff):
+    """One-pole low-pass at `cutoff` Hz: takes the fizz off noise and highs."""
+    k = 1 - math.exp(-2 * math.pi * cutoff / RATE)
+    out = []
+    y = 0.0
+    for v in track:
+        y += k * (v - y)
+        out.append(y)
+    return out
 
-    # Coins for paying
-    coin = lambda: bell(2100 * rng.uniform(0.97, 1.03), 0.4, ((1, 1.0, 0.12), (1.34, 0.6, 0.09), (2.03, 0.3, 0.05)))
-    save("coin", mix(coin(), gain(coin(), 0.6), offsets=[0, 0.07]), 0.5)
+
+def fade_in(track, seconds=0.003):
+    """A few ms of fade-in, so a sound never starts with a click."""
+    n = min(len(track), int(seconds * RATE))
+    for i in range(n):
+        track[i] *= i / n
+    return track
+
+
+def room(track, wet=0.18, size=1.0):
+    """A small wooden room (Schroeder reverb: 4 combs, 2 all-passes), so
+    sounds sit in a space instead of hitting dry. Adds a short tail."""
+    src = track + [0.0] * int(0.6 * size * RATE)
+    combs = [(0.0297, 0.72), (0.0371, 0.70), (0.0411, 0.68), (0.0437, 0.66)]
+    wet_sum = [0.0] * len(src)
+    for delay, feedback in combs:
+        d = int(delay * size * RATE)
+        buf = [0.0] * d
+        lp = 0.0
+        for i, x in enumerate(src):
+            y = buf[i % d]
+            lp += 0.4 * (y - lp)  # damping: the walls absorb the highs
+            buf[i % d] = x + lp * feedback
+            wet_sum[i] += y
+    for delay in (0.005, 0.0017):
+        d = int(delay * RATE)
+        buf = [0.0] * d
+        out = []
+        for i, x in enumerate(wet_sum):
+            b = buf[i % d]
+            y = -x + b
+            buf[i % d] = x + b * 0.5
+            out.append(y)
+        wet_sum = out
+    return [x + w * wet * 0.25 for x, w in zip(src, wet_sum)]
+
+
+def finish(track, cutoff=7000, wet=0.18, size=1.0):
+    """Softened, de-clicked and placed in the room."""
+    return room(fade_in(lowpass(track, cutoff)), wet, size)
+
+
+def main():
+    # Cards: paper swishes and soft thumps on the wooden table.
+    swish = lambda length=0.11, bright=0.35: mix(
+        noise(length, length * 0.35, length * 0.25, low=0.25, high=bright, sweep_to=bright * 0.4),
+        gain(tone(190, 0.05, 0.002, 0.012), 0.25))
+    save("card_flip", finish(swish(), 5000, 0.12), 0.4)
+    save("card_deal", finish(mix(swish(0.12, 0.3), gain(swish(0.12, 0.3), 0.8), gain(swish(0.12, 0.3), 0.65), offsets=[0, 0.075, 0.15]), 5000, 0.14), 0.38)
+    save("card_place", finish(mix(tone(130, 0.2, 0.003, 0.05, (1.0, 0.25), glide_to=72), gain(noise(0.04, 0.002, 0.01, high=0.2), 0.4)), 2500, 0.2), 0.55)
+
+    # Coins for paying: a softer, lower clink of two coins.
+    coin = lambda: bell(1500 * rng.uniform(0.96, 1.04), 0.35, ((1, 1.0, 0.09), (1.47, 0.45, 0.06), (2.09, 0.2, 0.035)))
+    save("coin", finish(mix(coin(), gain(coin(), 0.55), offsets=[0, 0.06]), 6000, 0.2), 0.36)
 
     # Round start: two strikes of the ship's bell.
-    save("bell", mix(bell(523, 1.8), gain(bell(523, 1.6), 0.8), offsets=[0, 0.45]), 0.6)
+    save("bell", finish(mix(bell(523, 1.8), gain(bell(523, 1.6), 0.75), offsets=[0, 0.45]), 5500, 0.25, 1.3), 0.5)
 
     # An Infamy card is revealed: low ominous swell.
     swell = mix(
@@ -142,36 +197,41 @@ def main():
         tone(147, 1.4, 0.45, 0.45, (1.0, 0.3), vibrato=0.01),
         gain(noise(1.2, 0.4, 0.35, low=0.05, high=0.08), 0.5),
     )
-    save("reveal", swell, 0.6)
+    save("reveal", finish(swell, 3000, 0.25, 1.3), 0.5)
 
-    # Infamy claimed: short brass fanfare (C E G C).
-    save("claim", fanfare([3, 7, 10, 15], 0.09, 0.6), 0.6)
+    # Infamy claimed: short, warm brass fanfare (C E G C).
+    save("claim", finish(fanfare([3, 7, 10, 15], 0.09, 0.6), 3200, 0.25, 1.2), 0.48)
 
-    # Battle: a cannon shot.
+    # Battle: a distant cannon shot.
     boom = mix(
-        gain(noise(0.8, 0.002, 0.18, high=0.25, sweep_to=0.02), 1.0),
-        tone(90, 0.7, 0.002, 0.2, (1.0, 0.5), glide_to=38),
-        gain(noise(0.03, 0.0005, 0.006, high=0.9), 0.8),
+        gain(noise(0.8, 0.004, 0.18, high=0.2, sweep_to=0.02), 1.0),
+        tone(90, 0.7, 0.003, 0.2, (1.0, 0.5), glide_to=38),
+        gain(noise(0.03, 0.001, 0.006, high=0.6), 0.5),
     )
-    save("battle", boom, 0.85)
+    save("battle", finish(boom, 2200, 0.3, 1.4), 0.62)
 
     # Hook: whoosh then a metal ting.
-    whoosh = noise(0.28, 0.12, 0.07, low=0.4, high=0.05, sweep_to=0.5)
-    save("hook", mix(whoosh, gain(bell(2600, 0.35, ((1, 1.0, 0.15), (2.4, 0.4, 0.08))), 0.4), offsets=[0, 0.22]), 0.6)
+    whoosh = noise(0.28, 0.12, 0.07, low=0.4, high=0.05, sweep_to=0.4)
+    save("hook", finish(mix(whoosh, gain(bell(2200, 0.35, ((1, 1.0, 0.12), (2.4, 0.3, 0.06))), 0.35), offsets=[0, 0.22]), 6000, 0.2), 0.45)
 
     # Telescope: a rising glint.
-    save("telescope", mix(tone(700, 0.45, 0.05, 0.18, (1.0, 0.25), glide_to=1500, vibrato=0.01), gain(tone(1400, 0.45, 0.1, 0.15, glide_to=2800), 0.3)), 0.4)
+    save("telescope", finish(mix(tone(700, 0.45, 0.05, 0.18, (1.0, 0.25), glide_to=1400, vibrato=0.01), gain(tone(1400, 0.45, 0.1, 0.15, glide_to=2600), 0.25)), 5000, 0.25), 0.32)
 
     # Passing: two soft knocks on wood.
-    knock = lambda: mix(tone(320, 0.12, 0.001, 0.025, (1.0, 0.3)), gain(noise(0.02, 0.0005, 0.004, high=0.4), 0.5))
-    save("pass", mix(knock(), gain(knock(), 0.8), offsets=[0, 0.11]), 0.5)
+    knock = lambda: mix(tone(300, 0.12, 0.002, 0.025, (1.0, 0.3)), gain(noise(0.02, 0.001, 0.004, high=0.3), 0.4))
+    save("pass", finish(mix(knock(), gain(knock(), 0.8), offsets=[0, 0.11]), 3500, 0.2), 0.4)
 
-    # UI: tiny tick for selecting cards and buttons.
-    save("click", mix(tone(1800, 0.04, 0.0005, 0.008), gain(noise(0.02, 0.0005, 0.003, low=0.5, high=0.9), 0.4)), 0.35)
+    # UI: a soft wooden tap for buttons.
+    save("click", finish(mix(tone(950, 0.05, 0.001, 0.007, (1.0, 0.3)), gain(noise(0.015, 0.001, 0.003, high=0.3), 0.3)), 4000, 0.1), 0.26)
 
     # End of game.
-    save("victory", fanfare([3, 7, 10, 15, 10, 15, 19], 0.11, 1.4), 0.65)
-    save("defeat", mix(*[tone(NOTE(s), 0.9, 0.03, 0.35, BRASS[:4]) for s in (-2, -5, -9)], offsets=[0, 0.35, 0.7]), 0.55)
+    save("victory", finish(fanfare([3, 7, 10, 15, 10, 15, 19], 0.11, 1.4), 3500, 0.28, 1.3), 0.5)
+    save("defeat", finish(mix(*[tone(NOTE(s), 0.9, 0.03, 0.35, BRASS[:4]) for s in (-2, -5, -9)], offsets=[0, 0.35, 0.7]), 3000, 0.28, 1.3), 0.45)
+
+    # A discarded card burns: a soft flame swell with a few crackles.
+    flame = noise(0.6, 0.12, 0.2, low=0.02, high=0.06, sweep_to=0.2)
+    crackles = [gain(noise(0.015, 0.0005, 0.003, low=0.4, high=0.7), rng.uniform(0.3, 0.7)) for _ in range(7)]
+    save("burn", finish(mix(flame, *crackles, offsets=[0] + sorted(rng.uniform(0.05, 0.5) for _ in range(7))), 4500, 0.15), 0.36)
     print("wrote sounds to", os.path.normpath(OUT))
 
 

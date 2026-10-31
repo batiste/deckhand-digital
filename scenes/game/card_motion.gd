@@ -10,6 +10,7 @@ extends CanvasLayer
 
 const TRAVEL := 0.42
 const ARC := 18.0
+const BURN := 0.55
 
 var _flights := {} # card id -> {ghost: CardView, tween: Tween, target: CardView, to: pose, zone: String}
 
@@ -73,6 +74,46 @@ func retarget(id: int, target: CardView, to: Dictionary) -> void:
 	# The step callable holds this same dictionary.
 	flight.to.center = to.center
 	flight.to.rotation = to.rotation
+
+## Burns card `id` away where it stands (`at` pose), with a few embers
+## drifting up. For discards.
+func burn(id: int, at: Dictionary, delay: float = 0.0) -> void:
+	var ghost := CardView.make(id, at.size, at.face_up)
+	ghost.interactive = false
+	ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(ghost)
+	ghost.position = at.center - at.size / 2.0
+	ghost.rotation = at.rotation
+	var tween := create_tween()
+	tween.tween_interval(delay)
+	tween.tween_callback(_embers.bind(at))
+	tween.tween_method(ghost.set_burn, 0.0, 1.0, BURN)
+	tween.parallel().tween_property(ghost, "position:y", ghost.position.y - 10.0, BURN).set_ease(Tween.EASE_OUT)
+	tween.tween_callback(ghost.queue_free)
+
+func _embers(at: Dictionary) -> void:
+	var embers := CPUParticles2D.new()
+	embers.position = at.center
+	embers.one_shot = true
+	embers.explosiveness = 0.15
+	embers.amount = 26
+	embers.lifetime = 0.9
+	embers.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
+	embers.emission_rect_extents = at.size / 2.0
+	embers.direction = Vector2.UP
+	embers.spread = 35.0
+	embers.gravity = Vector2(0.0, -60.0)
+	embers.initial_velocity_min = 20.0
+	embers.initial_velocity_max = 60.0
+	embers.scale_amount_min = 1.5
+	embers.scale_amount_max = 3.0
+	var ramp := Gradient.new()
+	ramp.set_color(0, Color(1.0, 0.8, 0.35, 1.0))
+	ramp.set_color(1, Color(0.9, 0.25, 0.05, 0.0))
+	embers.color_ramp = ramp
+	add_child(embers)
+	embers.emitting = true
+	embers.finished.connect(embers.queue_free)
 
 ## Ends every flight at once (e.g. when a new game starts).
 func settle() -> void:

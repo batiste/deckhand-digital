@@ -9,7 +9,7 @@ const FONT_REGULAR := "res://scenes/shared/fonts/signika/Signika-Regular.ttf"
 const FONT_BOLD := "res://scenes/shared/fonts/signika/Signika-SemiBold.ttf"
 
 const HAND_CARD := Vector2(172, 235)
-const ROW_CARD := Vector2(134, 182)
+const ROW_CARD := Vector2(126, 171)
 const PILE_CARD := Vector2(78, 106)
 const CREW_CARD := Vector2(128, 174)
 ## Height of a crew card left showing (banners, VP, title) when stacked.
@@ -20,7 +20,7 @@ const OVERLAY_CARD := Vector2(180, 245)
 const OVERLAY_CARD_SMALL := Vector2(135, 184)
 const LEDGER_WIDTH := 196.0
 ## How much of the hand shows above the bottom edge; hovered cards rise fully.
-const HAND_VISIBLE := 186.0
+const HAND_VISIBLE := 170.0
 const HAND_FOCUS_SCALE := 1.4
 const HAND_NEIGHBOUR_SCALE := 1.12
 const ZOOM_CARD := Vector2(340, 462)
@@ -32,7 +32,20 @@ const WOOD := "res://assets/ui/wood.jpg"
 const ROUNDED_SHADER := preload("res://scenes/game/rounded_panel.gdshader")
 const PARCHMENT := "res://assets/ui/parchment.jpg"
 const LOGO := "res://assets/new-logo.png"
-const MENU_ART := "res://assets/art/kraken.jpg"
+## Music tracks. Each pass crossfades into the next over `crossfade`
+## seconds (the intro ends at full volume); the gameplay track sits low,
+## under the sound effects.
+const INTRO_MUSIC := {"path": "res://assets/intro.mp3", "db": -4.0, "crossfade": 4.0}
+const GAME_MUSIC := {"path": "res://assets/gameplay.mp3", "db": -13.0, "crossfade": 3.0}
+## Title screen paintings, shown in turn.
+const MENU_ART: Array[String] = [
+	"res://assets/art/kraken.jpg",
+	"res://assets/art/walk-plank.jpg",
+	"res://assets/art/whale.jpg",
+	"res://assets/art/drowned-keeper.jpg",
+]
+const SLIDE_TIME := 12.0
+const SLIDE_FADE := 1.8
 
 const TABLE_TINT := Color(0.26, 0.18, 0.12)
 const PANEL_BG := Color(0.06, 0.045, 0.035, 0.84)
@@ -95,6 +108,12 @@ var _zoom_panel: PanelContainer
 var _zoom_card: CardView
 var _zoom_text: RichTextLabel
 var _sfx: Sfx
+var _music: AudioStreamPlayer # the pass playing now
+var _music_next: AudioStreamPlayer # the other one, for the crossfade
+var _music_track := {} # the track looping now (INTRO_MUSIC...), empty when silent
+var _music_pass := 0
+var _curtain: ColorRect # black, for fading into a new game
+var _slides: Array[TextureRect] = [] # two layers for crossfading the title art
 
 # Card motion: views are rebuilt on every refresh, so poses are captured before
 # and replayed by CardMotion after layout.
@@ -112,17 +131,48 @@ func _ready() -> void:
 	CardDB.ensure_loaded()
 	_sfx = Sfx.new()
 	add_child(_sfx)
+	_music = AudioStreamPlayer.new()
+	_music.bus = "Music"
+	add_child(_music)
+	_music_next = AudioStreamPlayer.new()
+	_music_next.bus = "Music"
+	add_child(_music_next)
 	_build_ui()
 	_motion = CardMotion.new()
 	_motion.layer = 5
 	add_child(_motion)
+	var curtain_layer := CanvasLayer.new()
+	curtain_layer.layer = 30
+	add_child(curtain_layer)
+	_curtain = ColorRect.new()
+	_curtain.color = Color.BLACK
+	_curtain.set_anchors_preset(PRESET_FULL_RECT)
+	_curtain.visible = false
+	curtain_layer.add_child(_curtain)
 	_open_menu()
 	_intro()
 
 # --- Game lifecycle ---------------------------------------------------------
 
+## From the menu: fade to black, set the table up, and fade it in.
+func _start_game() -> void:
+	if _curtain.visible:
+		return
+	_curtain.visible = true
+	_curtain.modulate.a = 0.0
+	var tween := create_tween()
+	tween.tween_property(_curtain, "modulate:a", 1.0, 0.45)
+	tween.tween_callback(_new_game)
+	# Let the deal settle behind the curtain first.
+	tween.tween_interval(0.5)
+	tween.tween_property(_curtain, "modulate:a", 0.0, 1.1).set_trans(Tween.TRANS_SINE)
+	tween.tween_callback(func() -> void: _curtain.visible = false)
+
 func _new_game() -> void:
 	_menu.visible = false
+	_play_music(GAME_MUSIC, 2.0)
+	# The first deal, reveal and bot moves happen at once: keep them quiet.
+	_sfx.hush(2.5)
 	var seats: Array = [{"name": "Captain", "bot": false}]
 	if settings.solo:
 		seats.append({"name": "The Phantom Crew", "bot": true, "virtual": true})
@@ -186,7 +236,14 @@ func _build_ui() -> void:
 	var planks := _cover(WOOD)
 	planks.modulate = TABLE_TINT
 	add_child(planks)
-	add_child(_vignette(0.7))
+	# Lamplight: a warm, flickering pool, the edges in shadow.
+	var candle := ColorRect.new()
+	candle.set_anchors_preset(PRESET_FULL_RECT)
+	candle.mouse_filter = MOUSE_FILTER_IGNORE
+	var light := ShaderMaterial.new()
+	light.shader = preload("res://scenes/game/candlelight.gdshader")
+	candle.material = light
+	add_child(candle)
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(PRESET_FULL_RECT)
@@ -261,7 +318,7 @@ func _build_ui() -> void:
 	_ledger_vp = _rich(16)
 	_ledger_vp.fit_content = true
 	ledger_v.add_child(_ledger_vp)
-	_ledger_body = _rich(16)
+	_ledger_body = _rich(15)
 	_ledger_body.fit_content = true
 	ledger_v.add_child(_ledger_body)
 
@@ -285,6 +342,10 @@ func _build_ui() -> void:
 
 	# Action bar
 	var action_panel := _wood_panel(Color(0.42, 0.3, 0.2))
+	# Slimmer than the other wood panels: the table above needs the height.
+	var action_style := action_panel.get_theme_stylebox("panel") as StyleBoxTexture
+	action_style.content_margin_top = 10
+	action_style.content_margin_bottom = 10
 	main.add_child(action_panel)
 	var action_h := HBoxContainer.new()
 	action_h.add_theme_constant_override("separation", 12)
@@ -292,7 +353,7 @@ func _build_ui() -> void:
 	_action_text = _rich(17)
 	_action_text.fit_content = true
 	_action_text.size_flags_horizontal = SIZE_EXPAND_FILL
-	_action_text.custom_minimum_size.y = 52
+	_action_text.custom_minimum_size.y = 42
 	action_h.add_child(_action_text)
 	_buttons = HBoxContainer.new()
 	_buttons.add_theme_constant_override("separation", 8)
@@ -336,7 +397,7 @@ func _build_overlay() -> void:
 	center.set_anchors_preset(PRESET_FULL_RECT)
 	center.mouse_filter = MOUSE_FILTER_IGNORE
 	# Leave the hand and action bar visible below the overlay.
-	center.offset_bottom = -(HAND_VISIBLE + 110)
+	center.offset_bottom = -(HAND_VISIBLE + 84)
 	# Centred on the window, with the ledger's width kept clear on both sides.
 	center.offset_left = LEDGER_WIDTH + 24
 	center.offset_right = -(LEDGER_WIDTH + 24)
@@ -352,17 +413,31 @@ func _build_overlay() -> void:
 	panel.add_child(_overlay_body)
 
 func _build_menu() -> void:
+	# Its own layer, above the cards (which use z_index), the flying cards
+	# and the zoom.
+	var layer := CanvasLayer.new()
+	layer.layer = 20
+	add_child(layer)
 	_menu = Control.new()
 	_menu.set_anchors_preset(PRESET_FULL_RECT)
-	add_child(_menu)
-	# The title screen: the kraken art drifting slowly behind the logo.
-	var art := _cover(MENU_ART)
-	art.modulate = Color(0.85, 0.85, 0.88)
-	_menu.add_child(art)
-	art.resized.connect(func() -> void: art.pivot_offset = art.size / 2.0)
-	var drift := art.create_tween().set_loops()
-	drift.tween_property(art, "scale", Vector2(1.1, 1.1), 14.0).from(Vector2.ONE).set_trans(Tween.TRANS_SINE)
-	drift.tween_property(art, "scale", Vector2.ONE, 14.0).set_trans(Tween.TRANS_SINE)
+	_menu.theme = _make_theme()
+	layer.add_child(_menu)
+	# Black under the paintings, so the table never shows through a fade.
+	var black := ColorRect.new()
+	black.color = Color.BLACK
+	black.set_anchors_preset(PRESET_FULL_RECT)
+	_menu.add_child(black)
+	# The title screen: paintings scrolling slowly behind the logo, each
+	# crossfading into the next.
+	for i in range(2):
+		var art := TextureRect.new()
+		art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		art.stretch_mode = TextureRect.STRETCH_SCALE
+		art.mouse_filter = MOUSE_FILTER_IGNORE
+		_menu.add_child(art)
+		_slides.append(art)
+	_slides[1].modulate.a = 0.0
+	_show_slide(0)
 	_menu.add_child(_vignette())
 	var center := CenterContainer.new()
 	center.set_anchors_preset(PRESET_FULL_RECT)
@@ -376,8 +451,13 @@ func _build_menu() -> void:
 	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	logo.custom_minimum_size = Vector2(640, 302)
 	logo.resized.connect(func() -> void: logo.pivot_offset = logo.size / 2.0)
+	var gleam := ShaderMaterial.new()
+	gleam.shader = preload("res://scenes/game/logo.gdshader")
+	logo.material = gleam
 	column.add_child(logo)
 	var panel := _wood_panel()
+	(panel.material as ShaderMaterial).set_shader_parameter("lantern", 1.0)
+	(panel.material as ShaderMaterial).set_shader_parameter("rim_width", 2.5)
 	panel.size_flags_horizontal = SIZE_SHRINK_CENTER
 	column.add_child(panel)
 	var v := VBoxContainer.new()
@@ -409,11 +489,28 @@ func _build_menu() -> void:
 	beginner.text = "Beginner draft: 7 cards in the first draft"
 	beginner.toggled.connect(func(on: bool) -> void: settings.beginner = on)
 	v.add_child(beginner)
-	var sound := CheckBox.new()
-	sound.text = "Sound effects"
-	sound.button_pressed = true
-	sound.toggled.connect(func(on: bool) -> void: _sfx.enabled = on)
-	v.add_child(sound)
+	# Sound mixer.
+	var mixer := GridContainer.new()
+	mixer.columns = 2
+	mixer.add_theme_constant_override("h_separation", 16)
+	mixer.add_theme_constant_override("v_separation", 6)
+	v.add_child(mixer)
+	for spec in [["Master", "Volume"], ["Music", "Music"], ["Effects", "Sound effects"]]:
+		var bus: String = spec[0]
+		mixer.add_child(_label(spec[1], 16))
+		var slider := HSlider.new()
+		slider.min_value = 0.0
+		slider.max_value = 1.0
+		slider.step = 0.05
+		slider.value = _sfx.volumes[bus]
+		slider.size_flags_horizontal = SIZE_EXPAND_FILL
+		slider.size_flags_vertical = SIZE_SHRINK_CENTER
+		slider.value_changed.connect(func(level: float) -> void: _sfx.set_volume(bus, level))
+		slider.drag_ended.connect(func(_changed: bool) -> void:
+			_sfx.save_volumes()
+			if bus != "Music":
+				_sfx.play("coin"))
+		mixer.add_child(slider)
 
 	var buttons := HBoxContainer.new()
 	buttons.add_theme_constant_override("separation", 10)
@@ -424,7 +521,7 @@ func _build_menu() -> void:
 	var resume := _button("Resume", func() -> void: _menu.visible = false)
 	resume.name = "Resume"
 	buttons.add_child(resume)
-	buttons.add_child(_button("New game", _new_game))
+	buttons.add_child(_button("New game", _start_game))
 	v.add_child(buttons)
 	_menu.set_meta("opponents", opp)
 	_menu.set_meta("resume", resume)
@@ -434,10 +531,11 @@ func _build_menu() -> void:
 func _open_menu() -> void:
 	(_menu.get_meta("opponents") as OptionButton).select(settings.opponents - 1)
 	(_menu.get_meta("resume") as Button).visible = game != null
+	_zoom_panel.visible = false
 	_menu.visible = true
 
-## First appearance of the title menu: fades in from the boot screen's dark,
-## the logo drops in, then the options.
+## First appearance of the title menu: fades in from the boot screen's dark
+## with the intro music, the logo drops in, then the options.
 func _intro() -> void:
 	var logo: Control = _menu.get_meta("logo")
 	var panel: Control = _menu.get_meta("panel")
@@ -445,11 +543,91 @@ func _intro() -> void:
 	logo.modulate.a = 0.0
 	panel.modulate.a = 0.0
 	var tween := create_tween()
+	_play_music(INTRO_MUSIC, 1.5)
 	tween.tween_property(_menu, "modulate", Color.WHITE, 1.0)
-	tween.tween_callback(_sfx.play.bind("bell", -6.0))
 	tween.parallel().tween_property(logo, "modulate:a", 1.0, 0.4)
 	tween.parallel().tween_property(logo, "scale", Vector2.ONE, 0.8).from(Vector2(1.5, 1.5)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.tween_property(panel, "modulate:a", 1.0, 0.4)
+
+## Brings title painting `index` in over the current one and schedules the
+## next. The painting covers the screen and scrolls along its longer side, so
+## all of a tall one is seen.
+func _show_slide(index: int) -> void:
+	# _slides[0] is the painting on show, _slides[1] the spare layer.
+	var art := _slides[1]
+	var shown := _slides[0]
+	art.texture = load(MENU_ART[index])
+	art.modulate = Color(0.85, 0.85, 0.88, 0.0)
+	_menu.move_child(art, maxi(art.get_index(), shown.get_index()))
+	_slides.assign([art, shown])
+	var tween := art.create_tween()
+	tween.tween_property(art, "modulate:a", 1.0, SLIDE_FADE)
+	var screen: Vector2 = get_viewport_rect().size
+	var image: Vector2 = art.texture.get_size()
+	art.size = image * maxf(screen.x / image.x, screen.y / image.y)
+	var overflow := art.size - screen
+	var from := -overflow / 2.0
+	var to := from
+	if overflow.y > overflow.x:
+		from.y = 0.0
+		to.y = -overflow.y
+	else:
+		from.x = 0.0
+		to.x = -overflow.x
+	tween.parallel().tween_property(art, "position", to, SLIDE_TIME + SLIDE_FADE).from(from).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	tween.parallel().tween_callback(_show_slide.bind((index + 1) % MENU_ART.size())).set_delay(SLIDE_TIME)
+
+## Switches to looping `track`, crossfading from whatever plays now.
+func _play_music(track: Dictionary, fade_in: float) -> void:
+	if track == _music_track:
+		return
+	_music_track = track
+	_play_music_pass(fade_in)
+
+## Starts a pass of the current track on the spare player, fading it in over
+## `fade_in` seconds while the other fades out, and schedules the next pass
+## for the last seconds of this one.
+func _play_music_pass(fade_in: float) -> void:
+	if _music_track.is_empty():
+		return
+	_music_pass += 1
+	var this_pass := _music_pass
+	var old := _music
+	_music = _music_next
+	_music_next = old
+	_fade_out(old, fade_in)
+	var track := _music_track
+	_music.stream = load(track.path)
+	_music.volume_db = -40.0
+	_music.play()
+	_fade_tween(_music).tween_property(_music, "volume_db", track.db, fade_in).set_trans(Tween.TRANS_SINE)
+	var length := _music.stream.get_length()
+	get_tree().create_timer(length - track.crossfade).timeout.connect(func() -> void:
+		if this_pass == _music_pass:
+			_play_music_pass(track.crossfade))
+
+func _fade_out(player: AudioStreamPlayer, seconds: float) -> void:
+	if not player.playing:
+		return
+	var fade := _fade_tween(player)
+	fade.tween_property(player, "volume_db", -40.0, seconds).set_trans(Tween.TRANS_SINE)
+	fade.tween_callback(player.stop)
+
+## A new volume tween for `player`, replacing one still running (whose
+## stop at the end would cut the new music).
+func _fade_tween(player: AudioStreamPlayer) -> Tween:
+	if player.has_meta("fade"):
+		(player.get_meta("fade") as Tween).kill()
+	var tween := player.create_tween()
+	player.set_meta("fade", tween)
+	return tween
+
+## Silences the music.
+func _fade_music() -> void:
+	_music_track = {}
+	_music_pass += 1
+	_fade_out(_music, 1.2)
+	_fade_out(_music_next, 1.2)
 
 ## A dark radial vignette over the table and the menu.
 static func _vignette(strength: float = 0.85) -> TextureRect:
@@ -529,6 +707,23 @@ func _make_theme() -> Theme:
 	t.set_stylebox("focus", "Button", focus)
 	t.set_color("font_color", "Button", Color(1, 0.93, 0.8))
 	t.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(0.12, 0.09, 0.05)
+	track.border_color = Color(0.75, 0.58, 0.3, 0.8)
+	track.set_border_width_all(1)
+	track.set_corner_radius_all(4)
+	track.content_margin_top = 4
+	track.content_margin_bottom = 4
+	var filled := StyleBoxFlat.new()
+	filled.bg_color = Color(0.85, 0.64, 0.3)
+	filled.set_corner_radius_all(4)
+	filled.content_margin_top = 4
+	filled.content_margin_bottom = 4
+	var filled_hover := filled.duplicate()
+	filled_hover.bg_color = Color(1.0, 0.8, 0.42)
+	t.set_stylebox("slider", "HSlider", track)
+	t.set_stylebox("grabber_area", "HSlider", filled)
+	t.set_stylebox("grabber_area_highlight", "HSlider", filled_hover)
 	return t
 
 # --- Small builders ---------------------------------------------------------
@@ -729,7 +924,7 @@ func _render_row() -> void:
 		for id: int in slot.cards:
 			var view := _card(id, ROW_CARD)
 			if game.can_claim(HUMAN, id):
-				view.mark = CardView.Mark.HIGHLIGHT
+				view.mark = CardView.Mark.CLAIMABLE
 			stack.add_child(view)
 		var need := ""
 		for id: int in slot.cards:
@@ -933,26 +1128,26 @@ static func _rebalance(stacks: Array, per_column: int) -> Array:
 ## kind of icon once with its count.
 func _render_ledger() -> void:
 	var offset := Vector2(_ledger_vp.size.x / 2.0 - 40.0, _ledger_vp.size.y * 0.45)
-	var fresh := _show_gains(HUMAN, _ledger_vp, "[center][color=#ffd36b][font_size=%d][b]{vp}[/b][/font_size] VP[/color][/center]" % _fs(38), offset)
+	var fresh := _show_gains(HUMAN, _ledger_vp, "[center][color=#ffd36b][font_size=%d][b]{vp}[/b][/font_size] VP[/color][/center]" % _fs(32), offset)
 	var banners := game.raised_banners(HUMAN)
 	var cells: Array[String] = []
 	for b in CardDB.BANNERS:
 		if banners[b] > 0:
 			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
-			cells.append("%s %s" % [_banner(b, 19), count])
+			cells.append("%s %s" % [_banner(b, 21), count])
 	var text := _ledger_section("Banners", cells, "none raised")
 	cells = []
 	for group: Array in _production_groups(HUMAN):
-		cells.append("%s %d" % [_slot_icons(group[0], 18), group[1]])
+		cells.append("%s %d" % [_slot_icons(group[0], 20), group[1]])
 	text += _ledger_section("Produces", cells, "nothing yet")
-	cells = ["%s %d" % [_img("fx-tentacle", 18), game.tentacles(HUMAN)]]
+	cells = ["%s %d" % [_img("fx-tentacle", 20), game.tentacles(HUMAN)]]
 	var compasses := game.symbol_count(HUMAN, "compasses")
 	for spec in [["battles", "fx-battle"], ["hooks", "fx-hook"]]:
 		var n := game.symbol_count(HUMAN, spec[0])
 		if n > 0:
-			cells.append("%s %d" % [_img(spec[1], 18), n])
+			cells.append("%s %d" % [_img(spec[1], 20), n])
 	if compasses > 0:
-		cells.append("%s %d/%d" % [_img("fx-compass", 18), game.compasses_available(HUMAN), compasses])
+		cells.append("%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(HUMAN), compasses])
 	text += _ledger_section("Symbols", cells, "")
 	if game.players[HUMAN].pending_battles > 0:
 		text += "[color=#ffb070]Battle pending ×%d[/color]" % game.players[HUMAN].pending_battles
@@ -960,13 +1155,13 @@ func _render_ledger() -> void:
 
 func _ledger_section(title: String, cells: Array[String], empty: String) -> String:
 	# A short gap after each section, not a full line.
-	var gap := "[font_size=%d] [/font_size]\n" % _fs(7)
+	var gap := "[font_size=%d] [/font_size]\n" % _fs(4)
 	var text := "[color=#8a96a6][font_size=%d]%s[/font_size][/color]\n" % [_fs(13), title]
 	if cells.is_empty():
 		return text + "[color=#8a96a6]%s[/color]\n" % empty + gap
 	text += "[table=3]"
 	for cell in cells:
-		text += "[cell padding=0,1,10,1]%s[/cell]" % cell
+		text += "[cell padding=0,0,10,0]%s[/cell]" % cell
 	return text + "[/table]\n" + gap
 
 ## Hand order: windfall first, then hand, then draft picks.
@@ -1067,6 +1262,7 @@ func _layout_hand() -> void:
 		var hovered := i == focus
 		view.z_index = i + (100 if hovered else 0)
 		view.focused = hovered and _kb_hand
+		view.lifted = hovered
 		var x := x0 + i * step
 		var neighbour := focus >= 0 and absi(i - focus) == 1
 		if focus >= 0 and not hovered:
@@ -1513,10 +1709,18 @@ func _animate_cards(snapshot: Dictionary) -> void:
 		moving.append(view)
 		view.modulate.a = 0.0 # Until the ghost lands; avoids a one-frame pop.
 	var draft_passed := false
+	var burned := 0
 	for id: int in poses:
 		if not present.has(id):
 			draft_passed = draft_passed or (poses[id].get("zone") == "overlay" and game.phase == DeckhandGame.Phase.DRAFT)
-			_animate_vanished(id, poses[id], anchors)
+			if game.discard_pile.has(id) and not _motion.is_flying(id):
+				# Discards burn away where they were, one after the other.
+				_motion.burn(id, poses[id], burned * 0.08)
+				burned += 1
+			else:
+				_animate_vanished(id, poses[id], anchors)
+	if burned > 0:
+		_sfx.play("burn", -8.0)
 	# Containers lay out new cards on the next frame.
 	_unplayed = snapshot
 	await get_tree().process_frame
@@ -1770,6 +1974,7 @@ func _show_overlay_focus() -> void:
 		view.z_index = 1 if focused else 0
 		view.shadow = 0.9 if focused else 0.0
 		view.focused = focused
+		view.lifted = focused
 		view.create_tween().tween_property(view, "scale", Vector2.ONE * (1.07 if focused else 1.0), 0.15).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 # --- Zoom and log -----------------------------------------------------------
