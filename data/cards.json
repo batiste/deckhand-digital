@@ -1,0 +1,3016 @@
+[
+ {
+  "id": 1,
+  "file": "res://deck/001-sight-totem.png",
+  "title": "Sight Totem",
+  "kind": "infamy",
+  "cost": [
+   "gun",
+   "parrot",
+   "rum"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "telescope",
+   "compass"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 1
+ },
+ {
+  "id": 2,
+  "file": "res://deck/002-mad-bowler.png",
+  "title": "Mad Bowler",
+  "kind": "infamy",
+  "cost": [
+   "gun",
+   "gun",
+   "skull",
+   "rum"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 5,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 3,
+  "file": "res://deck/003-eternal-avarice.png",
+  "title": "Eternal Avarice",
+  "kind": "infamy",
+  "cost": [
+   "skull",
+   "skull",
+   "crown"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 3,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "3-choices"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 4,
+  "file": "res://deck/004-tamed-kraken.png",
+  "title": "Tamed Kraken",
+  "kind": "infamy",
+  "cost": [
+   "crown",
+   "skull",
+   "helm"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 6,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 1,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 5,
+  "file": "res://deck/005-mermaids.png",
+  "title": "Mermaids",
+  "kind": "infamy",
+  "cost": [
+   "skull",
+   "coin",
+   "parrot",
+   "parrot"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 5,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 1,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 6,
+  "file": "res://deck/006-emerald-quest.png",
+  "title": "Emerald Quest",
+  "kind": "infamy",
+  "cost": [
+   "crown",
+   "crown",
+   "helm"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 5,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "draw-1"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 7,
+  "file": "res://deck/007-smuggler's-cove.png",
+  "title": "Smuggler's Cove",
+  "kind": "infamy",
+  "cost": [
+   "helm",
+   "rum",
+   "rum"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "draw-2"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 8,
+  "file": "res://deck/008-among-misfits.png",
+  "title": "Among Misfits",
+  "kind": "infamy",
+  "cost": [
+   "parrot",
+   "parrot",
+   "parrot"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 4,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 9,
+  "file": "res://deck/009-hurt-kraken.png",
+  "title": "Hurt Kraken",
+  "kind": "infamy",
+  "cost": [
+   "gun",
+   "gun",
+   "gun"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 4,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 1,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 10,
+  "file": "res://deck/010-three-paths.png",
+  "title": "Three Paths",
+  "kind": "infamy",
+  "cost": [
+   "helm",
+   "helm",
+   "helm"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 4,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "3-choices"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 11,
+  "file": "res://deck/011-inking-oath.png",
+  "title": "Inking Oath",
+  "kind": "infamy",
+  "cost": [
+   "coin",
+   "coin",
+   "coin"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 2,
+   "banner": "coin"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 12,
+  "file": "res://deck/012-pearl-diving.png",
+  "title": "Pearl Diving",
+  "kind": "infamy",
+  "cost": [
+   "basic",
+   "basic",
+   "basic",
+   "basic",
+   "basic"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 3,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "draw-2"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 13,
+  "file": "res://deck/013-stolen-stash.png",
+  "title": "Stolen Stash",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 14,
+  "file": "res://deck/014-cutpurse-alley.png",
+  "title": "Cutpurse Alley",
+  "kind": "supply",
+  "cost": [
+   "c",
+   "p",
+   "g",
+   "r"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": {
+   "on": "coin",
+   "effect": "draw-1"
+  },
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 15,
+  "file": "res://deck/015-nest-of-riches.png",
+  "title": "Nest of Riches",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "c",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "p"
+   ],
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 16,
+  "file": "res://deck/016-distillery.png",
+  "title": "Distillery",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "c",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ],
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 17,
+  "file": "res://deck/017-twin-thunder.png",
+  "title": "Twin Thunder",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "c",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ],
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 18,
+  "file": "res://deck/018-tavern-keeper.png",
+  "title": "Tavern Keeper",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 19,
+  "file": "res://deck/019-tropical-messenger.png",
+  "title": "Tropical Messenger",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 20,
+  "file": "res://deck/020-arms-dealer.png",
+  "title": "Arms Dealer",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 21,
+  "file": "res://deck/021-master-gunner.png",
+  "title": "Master Gunner",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "c",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 22,
+  "file": "res://deck/022-eagle-eyes.png",
+  "title": "Eagle Eyes",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "c",
+   "cs"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "telescope"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 23,
+  "file": "res://deck/023-rum-runner.png",
+  "title": "Rum Runner",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "g",
+   "c"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "draw-1"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 24,
+  "file": "res://deck/024-fortune-teller.png",
+  "title": "Fortune Teller",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "compass"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 1
+ },
+ {
+  "id": 25,
+  "file": "res://deck/025-barrel-trader.png",
+  "title": "Barrel Trader",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "cs",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "draw-2"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 26,
+  "file": "res://deck/026-primal-mayhem.png",
+  "title": "Primal Mayhem",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 27,
+  "file": "res://deck/027-armed-orangutan.png",
+  "title": "Armed Orangutan",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "gun"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 28,
+  "file": "res://deck/028-brawl.png",
+  "title": "Brawl",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "rum"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 29,
+  "file": "res://deck/029-gravecaller.png",
+  "title": "Gravecaller",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "g",
+   "c"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 30,
+  "file": "res://deck/030-wandering-wheel.png",
+  "title": "Wandering Wheel",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "p",
+   "c"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 31,
+  "file": "res://deck/031-idol-of-greed.png",
+  "title": "Idol of Greed",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "r",
+   "c"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 32,
+  "file": "res://deck/032-gifted-thief.png",
+  "title": "Gifted Thief",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "g",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "crown"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 33,
+  "file": "res://deck/033-haunted-manor.png",
+  "title": "Haunted Manor",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "p",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "skull"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 34,
+  "file": "res://deck/034-aerial-lookout.png",
+  "title": "Aerial Lookout",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "basic"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "telescope"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 35,
+  "file": "res://deck/035-skeleton-crew.png",
+  "title": "Skeleton Crew",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "g",
+   "g"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 36,
+  "file": "res://deck/036-beach-wyrms.png",
+  "title": "Beach Wyrms",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "p",
+   "p"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 37,
+  "file": "res://deck/037-trade-route.png",
+  "title": "Trade Route",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 38,
+  "file": "res://deck/038-jungle-corsair.png",
+  "title": "Jungle Corsair",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "r",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "parrot"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 39,
+  "file": "res://deck/039-bazaar.png",
+  "title": "Bazaar",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "p",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "g",
+    "p"
+   ]
+  ],
+  "banners": [
+   "rum"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 40,
+  "file": "res://deck/040-heiress.png",
+  "title": "Heiress",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "g",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "p",
+    "r"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 41,
+  "file": "res://deck/041-robbery.png",
+  "title": "Robbery",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "r",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "g",
+    "cs"
+   ]
+  ],
+  "banners": [
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 42,
+  "file": "res://deck/042-fish-monger.png",
+  "title": "Fish Monger",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "h",
+   "cs"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": {
+   "on": "tentacle",
+   "effect": "3-choices"
+  },
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 43,
+  "file": "res://deck/043-kiss-the-ring.png",
+  "title": "Kiss the Ring",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "e",
+   "h"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 3,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 44,
+  "file": "res://deck/044-bride.png",
+  "title": "Bride",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "s",
+   "e"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "draw-1"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 45,
+  "file": "res://deck/045-deadly-expedition.png",
+  "title": "Deadly Expedition",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "h",
+   "s"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "skull"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 46,
+  "file": "res://deck/046-deadhand.png",
+  "title": "Deadhand",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "h",
+   "cs"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 47,
+  "file": "res://deck/047-emerald-cultist.png",
+  "title": "Emerald Cultist",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "s"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 48,
+  "file": "res://deck/048-real-bargain.png",
+  "title": "Real Bargain",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "e",
+   "cs"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 49,
+  "file": "res://deck/049-rowdy-mob.png",
+  "title": "Rowdy Mob",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "g",
+   "r"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "battle"
+  ],
+  "tentacles": 0,
+  "battles": 1,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 50,
+  "file": "res://deck/050-quiet-afternoon.png",
+  "title": "Quiet Afternoon",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "p",
+   "g",
+   "cs"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [
+   "rum"
+  ],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 51,
+  "file": "res://deck/051-contraband-cove.png",
+  "title": "Contraband Cove",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "rum"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 52,
+  "file": "res://deck/052-animal-sanctuary.png",
+  "title": "Animal Sanctuary",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "p",
+   "c"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 2,
+   "banner": "parrot"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 53,
+  "file": "res://deck/053-charming-plunder.png",
+  "title": "Charming Plunder",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "g",
+   "s"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "battle"
+  ],
+  "tentacles": 0,
+  "battles": 1,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 54,
+  "file": "res://deck/054-ana-stormlash.png",
+  "title": "Ana Stormlash",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "h",
+   "g",
+   "c"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "battle",
+   "draw-1"
+  ],
+  "tentacles": 0,
+  "battles": 1,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 55,
+  "file": "res://deck/055-cavern-horror.png",
+  "title": "Cavern Horror",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "e",
+   "c"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "3-choices"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 56,
+  "file": "res://deck/056-amazon-pathfinder.png",
+  "title": "Amazon Pathfinder",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "p",
+   "g"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "compass"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 1
+ },
+ {
+  "id": 57,
+  "file": "res://deck/057-wily-helmsman.png",
+  "title": "Wily Helmsman",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "r",
+   "p"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "3-choices"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 58,
+  "file": "res://deck/058-cannoneers'-guild.png",
+  "title": "Cannoneers' Guild",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "g",
+   "g"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 2,
+   "banner": "gun"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 59,
+  "file": "res://deck/059-scarlet-rogue.png",
+  "title": "Scarlet Rogue",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "g",
+   "h"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "gun"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 60,
+  "file": "res://deck/060-glimmer-of-riches.png",
+  "title": "Glimmer of Riches",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "h",
+   "c"
+  ],
+  "production": [],
+  "banners": [
+   "helm"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "telescope",
+   "draw-2"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 61,
+  "file": "res://deck/061-emerald-magpie.png",
+  "title": "Emerald Magpie",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "p",
+   "cs"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "crown"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 62,
+  "file": "res://deck/062-temple-of-chaos.png",
+  "title": "Temple of Chaos",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "s",
+   "s"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 3,
+   "banner": "skull"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 63,
+  "file": "res://deck/063-plank-workshop.png",
+  "title": "Plank Workshop",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "h",
+   "h"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 3,
+   "banner": "helm"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 64,
+  "file": "res://deck/064-emerald-mine.png",
+  "title": "Emerald Mine",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "e",
+   "e"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 3,
+   "banner": "crown"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 65,
+  "file": "res://deck/065-friendly-octopus.png",
+  "title": "Friendly Octopus",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "s",
+   "h",
+   "p",
+   "c"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 5,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 1,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 66,
+  "file": "res://deck/066-el-dorado.png",
+  "title": "El Dorado",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "g",
+   "g",
+   "r",
+   "r"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "coin"
+  ],
+  "vp": 6,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 67,
+  "file": "res://deck/067-severed-relic.png",
+  "title": "Severed Relic",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "g",
+   "cs",
+   "cs"
+  ],
+  "production": [],
+  "banners": [
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 2,
+   "banner": "coin"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 68,
+  "file": "res://deck/068-the-plank.png",
+  "title": "The Plank",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "r",
+   "h"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook"
+  ],
+  "tentacles": 1,
+  "battles": 0,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 69,
+  "file": "res://deck/069-under-the-canopy.png",
+  "title": "Under the Canopy",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "r",
+   "e"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "telescope"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 70,
+  "file": "res://deck/070-bitter-vintage.png",
+  "title": "Bitter Vintage",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "p",
+   "s"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "battle"
+  ],
+  "tentacles": 0,
+  "battles": 1,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 71,
+  "file": "res://deck/071-tentacle-dinner.png",
+  "title": "Tentacle Dinner",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "e",
+   "r"
+  ],
+  "production": [],
+  "banners": [],
+  "vp": 4,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "battle"
+  ],
+  "tentacles": 1,
+  "battles": 1,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 72,
+  "file": "res://deck/072-grave-robber.png",
+  "title": "Grave Robber",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "g"
+  ],
+  "production": [],
+  "banners": [
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": {
+   "on": "skull",
+   "effect": "draw-1"
+  },
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 73,
+  "file": "res://deck/073-gemback-whale.png",
+  "title": "Gemback Whale",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "p"
+  ],
+  "production": [],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": {
+   "on": "crown",
+   "effect": "draw-1"
+  },
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 74,
+  "file": "res://deck/074-treasure-hunter.png",
+  "title": "Treasure Hunter",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "p"
+  ],
+  "production": [],
+  "banners": [
+   "crown"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": {
+   "on": "helm",
+   "effect": "draw-1"
+  },
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 75,
+  "file": "res://deck/075-haven.png",
+  "title": "Haven",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "r",
+   "r",
+   "p"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 2,
+   "banner": "basic"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 76,
+  "file": "res://deck/076-pearl-swindler.png",
+  "title": "Pearl Swindler",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "g",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "basic"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 77,
+  "file": "res://deck/077-tavern.png",
+  "title": "Tavern",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "r",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 2,
+   "banner": "rum"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 78,
+  "file": "res://deck/078-rum-delivery.png",
+  "title": "Rum Delivery",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 79,
+  "file": "res://deck/079-wild-echo.png",
+  "title": "Wild Echo",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "g"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "gun",
+   "parrot"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 80,
+  "file": "res://deck/080-ambush.png",
+  "title": "Ambush",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook",
+   "battle"
+  ],
+  "tentacles": 0,
+  "battles": 1,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 81,
+  "file": "res://deck/081-elixir-peddler.png",
+  "title": "Elixir Peddler",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "compass"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 1
+ },
+ {
+  "id": 82,
+  "file": "res://deck/082-rum-dispensary.png",
+  "title": "Rum Dispensary",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "r",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "rum",
+   "rum"
+  ],
+  "vp": 5,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 83,
+  "file": "res://deck/083-having-a-blast.png",
+  "title": "Having a Blast",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "g",
+   "c"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "gun"
+  ],
+  "vp": 3,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "battle"
+  ],
+  "tentacles": 0,
+  "battles": 1,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 84,
+  "file": "res://deck/084-hypnotic-frogs.png",
+  "title": "Hypnotic Frogs",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "p",
+   "p"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "parrot"
+  ],
+  "vp": 7,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 85,
+  "file": "res://deck/085-doll-from-the-deep.png",
+  "title": "Doll from the Deep",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "p",
+   "c"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "compass"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 1
+ },
+ {
+  "id": 86,
+  "file": "res://deck/086-shadow-thief.png",
+  "title": "Shadow Thief",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "coin"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 87,
+  "file": "res://deck/087-hoard-warden.png",
+  "title": "Hoard Warden",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "e",
+   "s",
+   "s",
+   "h",
+   "h"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [],
+  "vp": 8,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 1,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 88,
+  "file": "res://deck/088-skull-collector.png",
+  "title": "Skull Collector",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "s",
+   "s"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 3,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "3-choices"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 89,
+  "file": "res://deck/089-macabre-mates.png",
+  "title": "Macabre Mates",
+  "kind": "supply",
+  "cost": [
+   "s",
+   "s",
+   "s",
+   "h"
+  ],
+  "production": [],
+  "banners": [
+   "skull",
+   "gun"
+  ],
+  "vp": 6,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [
+   "hook"
+  ],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 1,
+  "compasses": 0
+ },
+ {
+  "id": 90,
+  "file": "res://deck/090-lost-crown.png",
+  "title": "Lost Crown",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "e",
+   "e",
+   "s"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "skull",
+   "crown"
+  ],
+  "vp": 6,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 91,
+  "file": "res://deck/091-armada.png",
+  "title": "Armada",
+  "kind": "supply",
+  "cost": [
+   "h",
+   "h",
+   "h",
+   "g"
+  ],
+  "production": [],
+  "banners": [
+   "rum",
+   "helm",
+   "crown"
+  ],
+  "vp": 6,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 92,
+  "file": "res://deck/092-flag-workshop.png",
+  "title": "Flag Workshop",
+  "kind": "supply",
+  "cost": [
+   "e",
+   "c",
+   "cs"
+  ],
+  "production": [],
+  "banners": [
+   "basic",
+   "basic",
+   "rum",
+   "parrot",
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 93,
+  "file": "res://deck/093-fruit-picker.png",
+  "title": "Fruit Picker",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "r",
+   "cs"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "parrot",
+   "rum"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 94,
+  "file": "res://deck/094-predator-strike.png",
+  "title": "Predator Strike",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "g",
+   "g"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 3,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 95,
+  "file": "res://deck/095-unlucky-incident.png",
+  "title": "Unlucky Incident",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "p",
+   "r",
+   "r",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "parrot",
+   "gun"
+  ],
+  "vp": 6,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 96,
+  "file": "res://deck/096-simian-effigy.png",
+  "title": "Simian Effigy",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "r",
+   "p",
+   "p",
+   "e",
+   "e"
+  ],
+  "production": [
+   [
+    "h",
+    "cs"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 5,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 97,
+  "file": "res://deck/097-stolen-stash.png",
+  "title": "Stolen Stash",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "coin"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 98,
+  "file": "res://deck/098-tavern-keeper.png",
+  "title": "Tavern Keeper",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "rum"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 99,
+  "file": "res://deck/099-tropical-messenger.png",
+  "title": "Tropical Messenger",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 100,
+  "file": "res://deck/100-arms-dealer.png",
+  "title": "Arms Dealer",
+  "kind": "supply",
+  "cost": [
+   "cs",
+   "cs",
+   "cs"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "gun"
+  ],
+  "vp": 0,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 101,
+  "file": "res://deck/101-primal-mayhem.png",
+  "title": "Primal Mayhem",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "p"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "parrot"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 102,
+  "file": "res://deck/102-armed-orangutan.png",
+  "title": "Armed Orangutan",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "g"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "gun"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 103,
+  "file": "res://deck/103-brawl.png",
+  "title": "Brawl",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "r"
+   ]
+  ],
+  "banners": [
+   "basic",
+   "rum"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 104,
+  "file": "res://deck/104-gravecaller.png",
+  "title": "Gravecaller",
+  "kind": "supply",
+  "cost": [
+   "p",
+   "g",
+   "c"
+  ],
+  "production": [
+   [
+    "s"
+   ]
+  ],
+  "banners": [
+   "skull"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 105,
+  "file": "res://deck/105-wandering-wheel.png",
+  "title": "Wandering Wheel",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "p",
+   "c"
+  ],
+  "production": [
+   [
+    "h"
+   ]
+  ],
+  "banners": [
+   "helm"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 106,
+  "file": "res://deck/106-idol-of-greed.png",
+  "title": "Idol of Greed",
+  "kind": "supply",
+  "cost": [
+   "g",
+   "r",
+   "c"
+  ],
+  "production": [
+   [
+    "e"
+   ]
+  ],
+  "banners": [
+   "crown"
+  ],
+  "vp": 1,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 107,
+  "file": "res://deck/107-quiet-afternoon.png",
+  "title": "Quiet Afternoon",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "p",
+   "g",
+   "cs"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [
+   "rum"
+  ],
+  "vp": 2,
+  "multiplier": null,
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ },
+ {
+  "id": 108,
+  "file": "res://deck/108-contraband-cove.png",
+  "title": "Contraband Cove",
+  "kind": "supply",
+  "cost": [
+   "r",
+   "cs",
+   "c"
+  ],
+  "production": [
+   [
+    "cs"
+   ]
+  ],
+  "banners": [],
+  "vp": 0,
+  "multiplier": {
+   "vp": 1,
+   "banner": "rum"
+  },
+  "trigger": null,
+  "effects": [],
+  "tentacles": 0,
+  "battles": 0,
+  "hooks": 0,
+  "compasses": 0
+ }
+]
