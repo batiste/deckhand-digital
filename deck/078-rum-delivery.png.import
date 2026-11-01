@@ -3,23 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://d00fmc7vno0qo"
-path.s3tc="res://.godot/imported/078-rum-delivery.png-f9f3076cfe2bbd5baddecc877a745d61.s3tc.ctex"
-path.etc2="res://.godot/imported/078-rum-delivery.png-f9f3076cfe2bbd5baddecc877a745d61.etc2.ctex"
+path="res://.godot/imported/078-rum-delivery.png-f9f3076cfe2bbd5baddecc877a745d61.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://deck/078-rum-delivery.png"
-dest_files=["res://.godot/imported/078-rum-delivery.png-f9f3076cfe2bbd5baddecc877a745d61.s3tc.ctex", "res://.godot/imported/078-rum-delivery.png-f9f3076cfe2bbd5baddecc877a745d61.etc2.ctex"]
+dest_files=["res://.godot/imported/078-rum-delivery.png-f9f3076cfe2bbd5baddecc877a745d61.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=1
 compress/high_quality=false
-compress/lossy_quality=0.7
+compress/lossy_quality=0.8
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0

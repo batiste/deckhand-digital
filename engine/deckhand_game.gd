@@ -852,7 +852,7 @@ func _task_claims(_task: Dictionary) -> void:
 			_remove_from_row(id)
 			removed.append(id)
 			_log("%s is contested by several pirates and is lost." % CardDB.title(id))
-			event.emit("lost", {"card": id})
+			event.emit("lost", {"card": id, "rivals": qualified})
 			_push_front([{"type": "claims"}])
 			return
 		winners_by_card[id] = winner

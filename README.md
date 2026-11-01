@@ -4,11 +4,11 @@ A digital version of the Deckhand card game. Recruit a crew of rogues over five
 rounds, raise your banners, claim Infamy, and score the most Victory Points.
 You play against 1 to 4 bots, or a solo variant against a virtual opponent.
 
-Built with [Godot 4.3](https://godotengine.org/download/archive/4.3-stable/).
+Built with [Godot 4.7](https://godotengine.org/download/).
 
 ## Run the game
 
-1. Install **Godot 4.3** (the standard build; .NET isn't needed).
+1. Install **Godot 4.7** or later (the standard build; .NET isn't needed).
 2. Open Godot, click **Import**, and select this folder's `project.godot`.
 3. Press **F5**, or the ▶ button at the top right.
 
@@ -93,9 +93,38 @@ godot --headless --path . -s res://tests/test_ui.gd
 
 ## Build a release
 
-In Godot: **Project → Export…**, then pick the **macOS** preset and export.
-The first time, Godot asks you to download the export templates for 4.3.
-The preset writes `deckhand.dmg` to `~/Downloads`.
+All three builds are made from any computer with Godot 4.7. The first time,
+Godot asks you to download the **export templates** for your Godot version (Editor →
+Manage Export Templates → Download and Install), which cover every platform.
+
+In Godot: **Project → Export…**, pick a preset, then **Export Project**. Or
+from a terminal (`godot` being your Godot binary, e.g.
+`/Applications/Godot.app/Contents/MacOS/Godot` on a Mac):
+
+```sh
+godot --headless --path . --export-release "macOS"   ~/Downloads/Deckhand.dmg
+godot --headless --path . --export-release "Windows" ~/Downloads/Deckhand-Windows/Deckhand.exe
+godot --headless --path . --export-release "Linux"   ~/Downloads/Deckhand-Linux/Deckhand.x86_64
+```
+
+The presets are in `export_presets.cfg`. They leave out the relay server,
+the tests and the docs, and store the card art as WebP (one copy, small).
+
+| Platform | You get | Download (zipped) | First launch |
+|---|---|---|---|
+| macOS | `Deckhand.dmg` with a universal app (Apple Silicon and Intel) | ~100 MB | Unsigned: right-click the app → **Open**, or System Settings → Privacy & Security → **Open Anyway** |
+| Windows | `Deckhand.exe`, a single file (64-bit) | ~70 MB | SmartScreen may warn: **More info → Run anyway** |
+| Linux | `Deckhand.x86_64`, a single file (64-bit) | ~64 MB | `chmod +x Deckhand.x86_64`, then run it |
+
+Zip the Windows and Linux folders to share them. Notes:
+
+- **Windows icon**: the `.exe` keeps Godot's icon unless Godot can edit it,
+  which needs [rcedit](https://github.com/electron/rcedit/releases): set its
+  path in Editor Settings → Export → Windows → rcedit, then turn on
+  *Modify Resources* in the Windows preset.
+- **Signing**: without it, macOS and Windows show the warnings above. Removing
+  them needs an Apple Developer ID (notarized builds) and a Windows code
+  signing certificate; both plug into the export presets.
 
 ## Project layout
 

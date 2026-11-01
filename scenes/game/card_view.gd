@@ -12,16 +12,18 @@ const CARD_ASPECT := 1632.0 / 2220.0
 const SUPPLY_BACK := "res://backs/back-supply.png"
 const INFAMY_BACK := "res://backs/back-infamy.png"
 const MARK_COLORS := {
-	Mark.SELECTED: Color(1.0, 0.8, 0.25),
-	Mark.PAYMENT: Color(0.95, 0.35, 0.3),
-	Mark.HIGHLIGHT: Color(0.45, 0.85, 1.0),
-	Mark.FREE: Color(0.45, 0.9, 0.4),
+	Mark.SELECTED: Color(1.0, 0.74, 0.0),
+	Mark.PAYMENT: Color(1.0, 0.16, 0.1),
+	Mark.HIGHLIGHT: Color(0.25, 0.75, 1.0),
+	Mark.FREE: Color(0.3, 0.92, 0.25),
 }
 
 ## Largest lean of a lifted card towards the pointer (radians).
 const MAX_TILT := 0.2
 
 static var _textures := {}
+static var _cross: ImageTexture
+static var _check: ImageTexture
 ## The card whose sheen last swept, so a card rebuilt while lifted (the table
 ## redraws often) does not glint again.
 static var _swept_id := -1
@@ -76,6 +78,8 @@ var _focus_ring := Panel.new()
 var _texture_rect := TextureRect.new()
 var _border := Panel.new()
 var _caption := Label.new()
+var _badge := TextureRect.new() # green check: to build; red cross: to discard
+var _checks: Array[TextureRect] = [] # on an Infamy card's printed banners you have
 
 static func texture_for(id: int, show_face: bool) -> Texture2D:
 	var path: String
@@ -124,13 +128,20 @@ func _init() -> void:
 
 	var style := StyleBoxFlat.new()
 	style.draw_center = false
-	style.set_border_width_all(3)
+	style.set_border_width_all(4)
 	style.set_corner_radius_all(8)
+	style.shadow_size = 10
 	_border.add_theme_stylebox_override("panel", style)
 	_border.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_border.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_border.visible = false
 	add_child(_border)
+
+	_badge.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_badge.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_badge.visible = false
+	add_child(_badge)
 
 	_caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -222,6 +233,37 @@ func _apply_tilt() -> void:
 		Vector3(0.0, 0.0, 1.0))
 	_set_param("tilt_inverse", h.inverse())
 
+## Infamy cards: a check on each printed banner whose requirement is met
+## (`met`, one bool per banner, left to right; empty for none).
+func set_requirement(met: Array) -> void:
+	for check in _checks:
+		check.queue_free()
+	_checks.clear()
+	for i in met.size():
+		if not met[i]:
+			continue
+		var check := TextureRect.new()
+		check.texture = _mark_badge(true)
+		check.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		check.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		check.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		check.set_meta("slot", Vector2(i, met.size()))
+		add_child(check)
+		_checks.append(check)
+	_place_checks()
+
+## The printed banners sit on the bottom strip, centred, 15.2% of the card
+## image apart (the image includes a 3 mm bleed round the card).
+func _place_checks() -> void:
+	var side := size.x * 0.11
+	for check in _checks:
+		var slot: Vector2 = check.get_meta("slot")
+		var image_x := 0.5 + (slot.x - (slot.y - 1.0) / 2.0) * 0.152 + 0.05
+		var x := (image_x - 3.0 / 69.0) / (1.0 - 6.0 / 69.0) * size.x
+		var y := (0.83 - 3.0 / 94.0) / (1.0 - 6.0 / 94.0) * size.y
+		check.size = Vector2(side, side)
+		check.position = Vector2(x - side / 2.0, y - side / 2.0)
+
 func set_caption(text: String) -> void:
 	_caption.text = text
 
@@ -232,15 +274,66 @@ func _on_resized() -> void:
 	(_border.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
 	(_shadow.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
 	(_focus_ring.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06) + 4)
+	# Top-left corner, overhanging it a little (the corner a fanned hand
+	# leaves uncovered).
+	var badge := size.x * 0.3
+	_badge.size = Vector2(badge, badge)
+	_badge.position = Vector2(-badge * 0.25, -badge * 0.25)
+	_place_checks()
 
 func _refresh_mark() -> void:
 	if not is_inside_tree():
 		return
 	_border.visible = MARK_COLORS.has(mark)
 	if _border.visible:
-		(_border.get_theme_stylebox("panel") as StyleBoxFlat).border_color = MARK_COLORS[mark]
+		var style := _border.get_theme_stylebox("panel") as StyleBoxFlat
+		style.border_color = MARK_COLORS[mark]
+		# Build and discard choices glow, so they stand out in a fanned hand.
+		var glow := mark == Mark.SELECTED or mark == Mark.PAYMENT
+		style.shadow_color = Color(MARK_COLORS[mark], 0.6 if glow else 0.0)
+	_badge.visible = mark == Mark.PAYMENT or mark == Mark.SELECTED
+	if _badge.visible:
+		_badge.texture = _mark_badge(mark == Mark.SELECTED)
 	_set_param("shimmer", 1.0 if mark == Mark.CLAIMABLE else 0.0)
 	modulate = Color(0.55, 0.55, 0.55) if mark == Mark.DISABLED else Color.WHITE
+
+## A green check (to build) or a red cross (to discard) with a light rim,
+## drawn once for all cards.
+static func _mark_badge(check: bool) -> ImageTexture:
+	if check and _check:
+		return _check
+	if not check and _cross:
+		return _cross
+	var size := 64
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var strokes: Array = [
+		[Vector2(0.22, 0.52), Vector2(0.42, 0.72)], [Vector2(0.42, 0.72), Vector2(0.78, 0.3)],
+	] if check else [
+		[Vector2(0.24, 0.24), Vector2(0.76, 0.76)], [Vector2(0.76, 0.24), Vector2(0.24, 0.76)],
+	]
+	var ink_color := Color(0.12, 0.62, 0.16) if check else Color(0.86, 0.08, 0.05)
+	for y in size:
+		for x in size:
+			var p := Vector2(x + 0.5, y + 0.5)
+			var dist := INF
+			for stroke: Array in strokes:
+				dist = minf(dist, _segment_distance(p, stroke[0] * size, stroke[1] * size))
+			var ink := clampf(size * 0.09 + 0.5 - dist, 0.0, 1.0)
+			var rim := clampf(size * 0.14 + 0.5 - dist, 0.0, 1.0)
+			var color := Color(1.0, 0.95, 0.88).lerp(ink_color, ink)
+			color.a = rim
+			img.set_pixel(x, y, color)
+	var texture := ImageTexture.create_from_image(img)
+	if check:
+		_check = texture
+	else:
+		_cross = texture
+	return texture
+
+static func _segment_distance(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var t := clampf((p - a).dot(ab) / ab.dot(ab), 0.0, 1.0)
+	return p.distance_to(a + ab * t)
 
 func _gui_input(event: InputEvent) -> void:
 	if not interactive:

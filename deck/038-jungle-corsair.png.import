@@ -3,23 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bu3jg58ym01oc"
-path.s3tc="res://.godot/imported/038-jungle-corsair.png-992f9f41cc3951f96d7f9e2a22068654.s3tc.ctex"
-path.etc2="res://.godot/imported/038-jungle-corsair.png-992f9f41cc3951f96d7f9e2a22068654.etc2.ctex"
+path="res://.godot/imported/038-jungle-corsair.png-992f9f41cc3951f96d7f9e2a22068654.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://deck/038-jungle-corsair.png"
-dest_files=["res://.godot/imported/038-jungle-corsair.png-992f9f41cc3951f96d7f9e2a22068654.s3tc.ctex", "res://.godot/imported/038-jungle-corsair.png-992f9f41cc3951f96d7f9e2a22068654.etc2.ctex"]
+dest_files=["res://.godot/imported/038-jungle-corsair.png-992f9f41cc3951f96d7f9e2a22068654.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=1
 compress/high_quality=false
-compress/lossy_quality=0.7
+compress/lossy_quality=0.8
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
