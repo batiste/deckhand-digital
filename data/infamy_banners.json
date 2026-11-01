@@ -1,0 +1,66 @@
+{
+	"1": [
+		"gun",
+		"parrot",
+		"rum"
+	],
+	"10": [
+		"helm",
+		"helm",
+		"helm"
+	],
+	"11": [
+		"coin",
+		"coin",
+		"coin"
+	],
+	"12": [
+		"basic",
+		"basic",
+		"basic",
+		"basic",
+		"basic"
+	],
+	"2": [
+		"skull",
+		"gun",
+		"gun",
+		"rum"
+	],
+	"3": [
+		"skull",
+		"skull",
+		"crown"
+	],
+	"4": [
+		"helm",
+		"skull",
+		"crown"
+	],
+	"5": [
+		"skull",
+		"coin",
+		"parrot",
+		"parrot"
+	],
+	"6": [
+		"helm",
+		"crown",
+		"crown"
+	],
+	"7": [
+		"helm",
+		"rum",
+		"rum"
+	],
+	"8": [
+		"parrot",
+		"parrot",
+		"parrot"
+	],
+	"9": [
+		"gun",
+		"gun",
+		"gun"
+	]
+}
