@@ -148,6 +148,7 @@ var _opp_panels := {} # player -> PanelContainer
 var _refresh_queued := false
 var _unplayed := {} # snapshot whose animation has not started yet
 var _title_layer: CanvasLayer # the round title on show, if any
+var _finale: CanvasLayer # the end-of-game screen, built once per game
 var _hold_choices := false # the round title is up: choices wait for it
 var _lost := {} # contested Infamy card id -> the tied players, until it is shown
 var _spotlights := 0 # Infamy cards (claimed or contested) still to show; choices wait
@@ -238,6 +239,8 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_unplayed = {}
 	_shown.clear()
 	_claimed.clear()
+	if is_instance_valid(_finale):
+		_finale.queue_free()
 	_lost.clear()
 	_spotlights = 0
 	_in_spotlight.clear()
@@ -1956,7 +1959,7 @@ func _render_action() -> void:
 		_show_pay_panel(false)
 	if game.phase == DeckhandGame.Phase.GAME_OVER:
 		_action_text.text = "[b]The voyage is over.[/b]"
-		_set_buttons([["Scores", _render_overlay], ["New game", _open_menu]])
+		_set_buttons([["Scores", _show_finale], ["New game", _open_menu]])
 		return
 	if decision == null:
 		_action_text.text = "[color=#8a96a6]The other pirates are deciding…[/color]"
@@ -2271,41 +2274,175 @@ func _on_draft_card(id: int, decision: Dictionary) -> void:
 	_render_overlay()
 
 func _render_game_over() -> void:
+	if is_instance_valid(_finale):
+		return
+	# After the last bands (a Battle, a claim...) have played out.
+	if _hold_choices or _band_up():
+		get_tree().create_timer(0.3).timeout.connect(_render_game_over)
+		return
+	_build_finale()
+
+func _show_finale() -> void:
+	if is_instance_valid(_finale):
+		_finale.visible = true
+
+## The end of the game: the table dims, the result pops in, your rank is
+## stamped in wax, and the score sheet counts up, last place first.
+func _build_finale() -> void:
 	var winners := game.winners()
-	var headline := "Victory!" if winners.has(_seat) else "Defeat"
-	if winners.size() > 1 and winners.has(_seat):
-		headline = "Shared victory"
-	_show_overlay(headline, "[center]Your rank: [b][color=#ffd36b]%s[/color][/b][/center]" % DeckhandGame.rank_for(game.score(_seat)))
-	# Score sheet: where each pirate's points come from.
+	var won := winners.has(_seat)
+	_finale = CanvasLayer.new()
+	_finale.layer = 7
+	add_child(_finale)
+	var root := Control.new()
+	root.set_anchors_preset(PRESET_FULL_RECT)
+	root.theme = theme
+	_finale.add_child(root)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.01, 0.0, 0.78)
+	dim.set_anchors_preset(PRESET_FULL_RECT)
+	dim.modulate.a = 0.0
+	root.add_child(dim)
+	dim.create_tween().tween_property(dim, "modulate:a", 1.0, 0.6)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(PRESET_FULL_RECT)
+	root.add_child(center)
+	var column := VBoxContainer.new()
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.add_theme_constant_override("separation", 14)
+	center.add_child(column)
+
+	# The result.
+	var headline := "Victory!" if won else "Defeat"
+	if won and winners.size() > 1:
+		headline = "Shared victory!"
+	var title := _label(headline, 72, GOLD if won else Color(0.9, 0.45, 0.38), true)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_color_override("font_outline_color", Color(0.12, 0.05, 0.02))
+	title.add_theme_constant_override("outline_size", 12)
+	column.add_child(title)
+	var top: Dictionary = game.final_scores[0]
+	var who := "You" if winners.size() == 1 and won else " & ".join(winners.map(func(p: int) -> String: return "you" if p == _seat else _who(p)))
+	var sub := _rich(22)
+	sub.fit_content = true
+	sub.add_theme_color_override("default_color", Color(1, 0.94, 0.82))
+	sub.text = "[center]%s %s with [b][color=#ffd36b]%d VP[/color][/b][/center]" % [who, "win" if winners.size() > 1 or won else "wins", top.score]
+	column.add_child(sub)
+
+	# Your rank, stamped in wax.
+	var seal := _rank_seal(DeckhandGame.rank_for(game.score(_seat)))
+	seal.size_flags_horizontal = SIZE_SHRINK_CENTER
+	column.add_child(seal)
+
+	# The score sheet, on dark wood for contrast.
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.09, 0.06, 0.035, 0.96)
+	style.border_color = Color(0.85, 0.66, 0.32)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(14)
+	style.set_content_margin_all(22)
+	style.shadow_color = Color(0, 0, 0, 0.6)
+	style.shadow_size = 24
+	panel.add_theme_stylebox_override("panel", style)
+	panel.size_flags_horizontal = SIZE_SHRINK_CENTER
+	column.add_child(panel)
 	var sheet := GridContainer.new()
 	sheet.columns = 6
-	sheet.add_theme_constant_override("h_separation", 28)
-	sheet.add_theme_constant_override("v_separation", 8)
-	_overlay_body.add_child(sheet)
-	_overlay_body.move_child(sheet, 2)
-	for title in ["", "Crew cards", "Infamy", "Multipliers", "Total", "%s" % _img("fx-tentacle", 18)]:
-		sheet.add_child(_sheet_cell("[color=#8a96a6]%s[/color]" % title, 14))
-	var row := 0
-	for entry: Dictionary in game.final_scores:
+	sheet.add_theme_constant_override("h_separation", 34)
+	sheet.add_theme_constant_override("v_separation", 10)
+	panel.add_child(sheet)
+	for heading in ["", "Crew cards", "Infamy", "Multipliers", "Total", _img("fx-tentacle", 20)]:
+		sheet.add_child(_sheet_cell("[color=#e8c27a][b]%s[/b][/color]" % heading, 15))
+	var count := game.final_scores.size()
+	for row in count:
+		var entry: Dictionary = game.final_scores[row]
 		var p: int = entry.player
 		var parts := game.score_breakdown(p)
-		var star := "[color=#ffd36b]★[/color] " if winners.has(p) else ""
-		var cells := [
-			_sheet_cell("%s[b]%s[/b]" % [star, _who(p)], 18, false),
-			_sheet_cell(str(parts.crew), 18),
-			_sheet_cell(str(parts.infamy), 18),
-			_sheet_cell(str(parts.multipliers), 18),
-			_sheet_cell("[b][color=#ffd36b]%d VP[/color][/b]" % entry.score, 20),
-			_sheet_cell(str(entry.tentacles), 16),
+		var winner: bool = winners.has(p)
+		var name := ("[color=#ffd36b]★[/color] " if winner else "") + ("[b]You[/b]" if p == _seat else "[b]%s[/b]" % _who(p))
+		var gold := "#ffd36b" if winner else "#fff2dc"
+		var cells: Array[RichTextLabel] = [
+			_sheet_cell(name, 20, false),
+			_sheet_cell("", 20), _sheet_cell("", 20), _sheet_cell("", 20),
+			_sheet_cell("", 24),
+			_sheet_cell("[color=#fff2dc]%d[/color]" % entry.tentacles, 18),
 		]
-		# Pirates appear one after another, from the bottom of the table up.
-		var delay := 0.35 + 0.3 * (game.final_scores.size() - 1 - row)
-		for cell: Control in cells:
+		var values := [parts.crew, parts.infamy, parts.multipliers, entry.score]
+		# Pirates appear one after another, last place first, counting up.
+		var delay := 1.4 + 0.55 * (count - 1 - row)
+		for i in cells.size():
+			var cell := cells[i]
 			sheet.add_child(cell)
 			cell.modulate.a = 0.0
-			cell.create_tween().tween_property(cell, "modulate:a", 1.0, 0.4).set_delay(delay)
-		row += 1
-	_overlay_buttons([["View the table", func() -> void: _overlay.visible = false], ["New game", _open_menu]])
+			var tween := cell.create_tween()
+			tween.tween_interval(delay)
+			tween.tween_property(cell, "modulate:a", 1.0, 0.25)
+			if i >= 1 and i <= 4:
+				var value: int = values[i - 1]
+				var fmt := "[b][color=%s]%%d VP[/color][/b]" % gold if i == 4 else "[color=#fff2dc]%d[/color]"
+				tween.parallel().tween_method(func(v: float) -> void: cell.text = "[center]%s[/center]" % (fmt % roundi(v)), 0.0, float(value), 0.7).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+		get_tree().create_timer(delay).timeout.connect(func() -> void: _sfx.play("coin", -8.0))
+
+	# Leave it, or sail again.
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 14)
+	column.add_child(buttons)
+	var view := _big(_button("View the table", func() -> void: _finale.visible = false))
+	buttons.add_child(view)
+	buttons.add_child(_big(_primary(_button("New game", _open_menu))))
+
+	# The entrance.
+	for i in column.get_child_count():
+		var part: Control = column.get_child(i)
+		if part == seal:
+			continue
+		part.modulate.a = 0.0
+		part.create_tween().tween_property(part, "modulate:a", 1.0, 0.4).set_delay(0.3 + 0.15 * i)
+	title.pivot_offset = title.get_combined_minimum_size() / 2.0
+	title.create_tween().tween_property(title, "scale", Vector2.ONE, 0.7).from(Vector2(0.4, 0.4)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT).set_delay(0.3)
+	var stamp := seal.create_tween()
+	seal.modulate.a = 0.0
+	seal.pivot_offset = seal.custom_minimum_size / 2.0
+	stamp.tween_interval(0.9)
+	stamp.tween_property(seal, "modulate:a", 1.0, 0.1)
+	stamp.parallel().tween_property(seal, "scale", Vector2.ONE, 0.25).from(Vector2(2.4, 2.4)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	stamp.tween_callback(func() -> void: _sfx.play("card_place"))
+	stamp.tween_property(seal, "rotation_degrees", -6.0, 0.08)
+	# A winner's celebration: gold dust bursting around the title.
+	if won:
+		for k in 10:
+			get_tree().create_timer(0.6 + k * 0.28).timeout.connect(func() -> void:
+				if not is_instance_valid(_finale) or not _finale.visible:
+					return
+				var screen := get_viewport_rect().size
+				var at := Vector2(randf_range(0.2, 0.8) * screen.x, randf_range(0.1, 0.4) * screen.y)
+				_motion.burst(at, Vector2(120, 60), 50))
+
+## A round wax seal with your rank on it.
+func _rank_seal(rank: String) -> Control:
+	var seal := PanelContainer.new()
+	var wax := StyleBoxFlat.new()
+	wax.bg_color = Color(0.62, 0.1, 0.1)
+	wax.border_color = Color(0.42, 0.05, 0.05)
+	wax.set_border_width_all(5)
+	wax.set_corner_radius_all(80)
+	wax.shadow_color = Color(0, 0, 0, 0.5)
+	wax.shadow_size = 10
+	wax.shadow_offset = Vector2(0, 4)
+	seal.add_theme_stylebox_override("panel", wax)
+	seal.custom_minimum_size = Vector2(160, 160)
+	var text := _rich(16)
+	text.fit_content = true
+	text.add_theme_color_override("default_color", Color(1, 0.88, 0.7))
+	text.add_theme_color_override("font_outline_color", Color(0.3, 0.02, 0.02))
+	text.add_theme_constant_override("outline_size", 4)
+	text.text = "[center][font_size=%d]YOUR RANK[/font_size]\n[b]%s[/b][/center]" % [_fs(11), rank]
+	text.size_flags_vertical = SIZE_SHRINK_CENTER
+	text.custom_minimum_size.x = 140
+	seal.add_child(text)
+	return seal
 
 func _sheet_cell(text: String, font_size: int, centered: bool = true) -> RichTextLabel:
 	var cell := _rich(font_size)
@@ -2531,7 +2668,7 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool) -> void:
 	if hold:
 		_hold_choices = true
-	while is_instance_valid(_title_layer):
+	while _band_up():
 		await _title_layer.tree_exited
 	var layer := CanvasLayer.new()
 	layer.layer = 6
@@ -2583,6 +2720,12 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	tween.tween_interval(1.1 if hold else 1.8)
 	tween.tween_property(band, "modulate:a", 0.0, 0.45)
 	tween.tween_callback(layer.queue_free)
+
+## Whether a band is on screen. (A band that has just left the tree is still
+## a valid object until the end of the frame: waiting for it to exit again
+## would wait forever.)
+func _band_up() -> bool:
+	return is_instance_valid(_title_layer) and _title_layer.is_inside_tree()
 
 ## A Battle is announced: when and how it will be fought.
 func _battle_announced(p: int) -> void:
@@ -2650,7 +2793,7 @@ func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 ## from pose `from`, turning face up, with `caption` under it; after a moment
 ## `finish` is called with its pose (to send it on) and the table clears.
 func _spotlight(id: int, from: Dictionary, caption_text: String, finish: Callable) -> void:
-	if is_instance_valid(_title_layer):
+	while _band_up():
 		await _title_layer.tree_exited
 	var screen := get_viewport_rect().size
 	var dim_layer := CanvasLayer.new()
@@ -2702,7 +2845,7 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, finish: Callabl
 		layer.queue_free()
 		dim_layer.queue_free()
 		_spotlights -= 1
-		if _spotlights == 0 and not is_instance_valid(_title_layer):
+		if _spotlights == 0 and not _band_up():
 			_hold_choices = false
 			_queue_refresh())
 
@@ -3166,35 +3309,35 @@ func _describe(id: int) -> void:
 	if card.kind == "infamy":
 		var need := []
 		for b: String in card.cost:
-			need.append(_banner(b, 20))
+			need.append(_banner(b, 24))
 		rows.append(["Claim with", _icons(need)])
 	else:
 		var cost := []
 		for token: String in card.cost:
-			cost.append(_res(token, 18))
+			cost.append(_res(token, 22))
 		rows.append(["Cost", _icons(cost)])
 		if not card.production.is_empty():
 			var prod := []
 			for slot: Array in card.production:
-				prod.append(_slot_icons(slot, 18))
+				prod.append(_slot_icons(slot, 22))
 			rows.append(["Produces", _icons(prod)])
 		if not card.banners.is_empty():
 			var banners := []
 			for b: String in card.banners:
-				banners.append(_banner(b, 18))
+				banners.append(_banner(b, 22))
 			rows.append(["Banners", _icons(banners)])
 	_info_rows(rows)
 
 	# Effects: an icon column, then the text (wrapping under itself).
 	var effects: Array = []
 	if card.multiplier != null:
-		effects.append([_banner(card.multiplier.banner, 18), "[color=#8a3b12][b]+%d VP[/b][/color] per raised banner at the end" % card.multiplier.vp])
+		effects.append([_banner(card.multiplier.banner, 22), "[color=#8a3b12][b]+%d VP[/b][/color] per raised banner at the end" % card.multiplier.vp])
 	if card.tentacles > 0:
-		effects.append([_img("fx-tentacle", 16), "Wins ties."])
+		effects.append([_img("fx-tentacle", 26), "Wins ties."])
 	for effect: String in card.effects:
-		effects.append([_img(EFFECT_ICONS[effect], 16), EFFECT_SHORT[effect]])
+		effects.append([_img(EFFECT_ICONS[effect], 26), EFFECT_SHORT[effect]])
 	if card.trigger != null:
-		var on: String = _img("fx-tentacle", 16) if card.trigger.on == "tentacle" else _banner(card.trigger.on, 18)
+		var on: String = _img("fx-tentacle", 22) if card.trigger.on == "tentacle" else _banner(card.trigger.on, 22)
 		effects.append([on, "Each time you add one: %s" % EFFECT_SHORT[card.trigger.effect]])
 	if not effects.is_empty():
 		_info_line()
@@ -3203,12 +3346,12 @@ func _describe(id: int) -> void:
 
 	if game != null and card.kind == "supply" and not game.players[_seat].crew.has(id):
 		# What discarding it pays: a coin, or (revealed) one of its resources.
-		var options := [_res("cs", 16), _res("c", 16)]
+		var options := [_res("cs", 24), _res("c", 24)]
 		for token in CardDB.production_tokens(id):
 			if not token in ["cs", "c"]:
-				options.append(_res(token, 16))
+				options.append(_res(token, 24))
 		_info_line()
-		_info_rows([["Discard", "[color=#7a6248]/[/color]".join(options)]], 0.75)
+		_info_rows([["Discard", "[color=#7a6248] / [/color]".join(options)]])
 
 ## Icons with even spacing between them.
 static func _icons(parts: Array) -> String:
@@ -3236,7 +3379,7 @@ func _info_rows(rows: Array, alpha: float = 1.0) -> void:
 
 ## One effect: its icon, then its text wrapping in a block of its own.
 func _info_effect(icon: String, text: String) -> void:
-	const ICON_WIDTH := 30.0
+	const ICON_WIDTH := 40.0
 	var row := HBoxContainer.new()
 	row.mouse_filter = MOUSE_FILTER_IGNORE
 	row.add_theme_constant_override("separation", 6)

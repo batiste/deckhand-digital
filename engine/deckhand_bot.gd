@@ -7,6 +7,30 @@ const EFFECT_VALUES := {
 	"draw-1": 1.0, "draw-2": 2.0, "3-choices": 1.3, "telescope": 0.4,
 	"hook": 0.8, "battle": 0.9, "compass": 0.0,
 }
+## Cards an effect brings into hand (a Hook steals one, gives one back below
+## 3 Hooks: counted as a fraction).
+const EFFECT_CARDS := {"draw-1": 1.0, "draw-2": 2.0, "3-choices": 1.25, "hook": 0.5}
+
+## Weights of the engine-aware valuation. `legacy` plays the older bot (for
+## comparison in tools/bot_arena.gd).
+const DEFAULTS := {
+	"legacy": false,
+	"card_worth": 1.6,       # a card in hand, early (build or payment material)
+	"card_worth_late": 0.6,  # ... in the last round
+	"builds_per_round": 4.0, # expected own builds in a round, at least
+	"production_use": 0.45,  # value of one production slot per future build
+	"pass_threshold": -0.3,  # build when the net value beats this
+	"burden": 1.5,           # draft: each resource the crew can't pay costs this many cards' worth
+	"multiplier_reach": 1.0, # how many of the banners still to come a multiplier counts
+	"discard_cost": 2.2,     # a card discarded to pay, in cards in hand (they are scarce)
+	"vp_early": 0.4,         # weight of VP (and multipliers) in round 1, rising to 1 by the last
+	"keep_buildable": 0.5,   # what a hand card is worth to keep: its value less its build cost, times this
+}
+## Per-player weights overriding DEFAULTS (bot experiments).
+static var tuning := {}
+
+static func param(p: int, key: String) -> Variant:
+	return tuning.get(p, {}).get(key, DEFAULTS[key])
 
 static func decide(game: DeckhandGame, p: int) -> Dictionary:
 	var decision: Dictionary = game.pending[p]
@@ -72,6 +96,96 @@ static func rounds_left(game: DeckhandGame) -> int:
 
 ## How much a card is worth to player `p` if built now (approximate VP).
 static func card_value(game: DeckhandGame, p: int, id: int) -> float:
+	if param(p, "legacy"):
+		return _legacy_value(game, p, id)
+	var card := CardDB.get_card(id)
+	var left := rounds_left(game)
+	var progress := float(game.round_index - 1) / float(DeckhandGame.ROUNDS - 1)
+	var banners := game.raised_banners(p)
+	var worth := card_worth(game, p)
+	var builds := expected_builds(game, p)
+	# Points only count at the end: early on, an engine matters more.
+	var vp_weight := lerpf(param(p, "vp_early"), 1.0, progress)
+	var value := float(card.vp) * vp_weight
+
+	if card.multiplier != null:
+		# Banners raised later count too: more of them in a bigger crew.
+		var share := _banner_share(card.multiplier.banner)
+		var expected: float = float(banners[card.multiplier.banner] + card.banners.count(card.multiplier.banner)) + builds * share * param(p, "multiplier_reach")
+		value += card.multiplier.vp * expected * vp_weight
+
+	# Production pays (instead of discards) for every later build.
+	value += card.production.size() * param(p, "production_use") * builds * (0.8 if card.production.size() == 1 and card.production[0].size() > 1 else 1.0)
+
+	var wanted := _wanted_banners(game, p)
+	for b: String in card.banners:
+		value += 0.35 + wanted.get(b, 0.0)
+		for other in game.players[p].crew:
+			var mult: Variant = CardDB.get_card(other).multiplier
+			if mult != null and mult.banner == b:
+				value += mult.vp
+
+	# Its own effects, and the triggers it sets off in the crew already.
+	for e: String in card.effects:
+		value += _effect_value(e, worth)
+	for other in game.players[p].crew:
+		var trigger: Variant = CardDB.get_card(other).trigger
+		if trigger == null:
+			continue
+		var times: int = card.tentacles if trigger.on == "tentacle" else card.banners.count(trigger.on)
+		value += times * _effect_value(trigger.effect, worth)
+	# Its own trigger: on every matching card added later.
+	if card.trigger != null:
+		var share := _tentacle_share() if card.trigger.on == "tentacle" else _banner_share(card.trigger.on)
+		var in_hand := 0
+		for h: int in game.players[p].hand:
+			var hc := CardDB.get_card(h)
+			in_hand += hc.tentacles if card.trigger.on == "tentacle" else hc.banners.count(card.trigger.on)
+		value += (in_hand + builds * share) * _effect_value(card.trigger.effect, worth)
+	value += card.compasses * 0.35 * left
+	value += card.tentacles * 0.8
+	# Late game, raw VP is all that matters.
+	return lerpf(value, float(game.card_score(p, id)) + 0.5 * card.vp, progress * progress * 0.5)
+
+## What a card in hand is worth to `p`: more early, when it can still be built.
+static func card_worth(game: DeckhandGame, p: int) -> float:
+	var progress := float(game.round_index - 1) / float(DeckhandGame.ROUNDS - 1)
+	return lerpf(param(p, "card_worth"), param(p, "card_worth_late"), progress)
+
+## Builds `p` can still expect this game: at least `builds_per_round` a
+## round, more if its crew already builds faster.
+static func expected_builds(game: DeckhandGame, p: int) -> float:
+	var per_round := maxf(param(p, "builds_per_round"), game.players[p].crew.size() / maxf(game.round_index - 1, 1.0))
+	return per_round * (rounds_left(game) + 0.5)
+
+static func _effect_value(effect: String, worth: float) -> float:
+	if EFFECT_CARDS.has(effect):
+		return EFFECT_CARDS[effect] * worth
+	return EFFECT_VALUES.get(effect, 0.0)
+
+## Share of Supply cards with banner `b` (how often a built card raises it).
+static func _banner_share(b: String) -> float:
+	if not _shares.has(b):
+		var n := 0
+		var ids := CardDB.ids_of_kind("supply")
+		for id in ids:
+			n += CardDB.get_card(id).banners.count(b)
+		_shares[b] = float(n) / ids.size()
+	return _shares[b]
+
+static func _tentacle_share() -> float:
+	if not _shares.has("tentacle"):
+		var n := 0
+		var ids := CardDB.ids_of_kind("supply")
+		for id in ids:
+			n += CardDB.get_card(id).tentacles
+		_shares["tentacle"] = float(n) / ids.size()
+	return _shares["tentacle"]
+
+static var _shares := {}
+
+## The first bot's valuation.
+static func _legacy_value(game: DeckhandGame, p: int, id: int) -> float:
 	var card := CardDB.get_card(id)
 	var left := rounds_left(game)
 	var progress := float(game.round_index - 1) / float(DeckhandGame.ROUNDS - 1) # 0 early, 1 last round
@@ -104,6 +218,15 @@ static func card_value(game: DeckhandGame, p: int, id: int) -> float:
 
 ## Value of keeping a card in hand (as future build or payment fodder).
 static func keep_value(game: DeckhandGame, p: int, id: int) -> float:
+	if not param(p, "legacy"):
+		# A card likely to be built is worth keeping; one too costly for the
+		# crew to build is payment material.
+		var k: float = param(p, "keep_buildable")
+		if k > 0.0:
+			var buildable := card_value(game, p, id) - _cost_burden(game, p, id) * card_worth(game, p)
+			return maxf(card_worth(game, p) * 0.5, card_worth(game, p) * 0.5 + buildable * k)
+		# Worth its future build, or at least what it pays for.
+		return maxf(card_worth(game, p) * param(p, "discard_cost"), card_value(game, p, id) * (0.15 if game.round_index == DeckhandGame.ROUNDS else 0.25) + 0.3)
 	if game.round_index == DeckhandGame.ROUNDS:
 		return 0.3 + card_value(game, p, id) * 0.15
 	return 0.4 + card_value(game, p, id) * 0.25
@@ -146,7 +269,12 @@ static func _cost_burden(game: DeckhandGame, p: int, id: int) -> float:
 	var missing := Payment.missing_after_crew(CardDB.get_card(id).cost, game.crew_production_slots(p))
 	var burden := 0.0
 	for token in missing:
-		burden += 0.35 if token == "c" or token == "cs" else 0.8
+		if param(p, "legacy"):
+			burden += 0.35 if token == "c" or token == "cs" else 0.8
+		else:
+			# Cards it takes: a coin is one discard (gold only comes that way);
+			# a resource is one revealed card that makes it, or two any.
+			burden += 1.0 if token == "c" or token == "cs" else 1.4
 	return burden
 
 # --- Decisions --------------------------------------------------------------
@@ -165,7 +293,11 @@ static func _draft_pick(game: DeckhandGame, p: int, decision: Dictionary) -> Dic
 	var hand: Array = game.players[p].draft_hand
 	var scored: Array = []
 	for id: int in hand:
-		scored.append([card_value(game, p, id) - _cost_burden(game, p, id) * 0.6, id])
+		var burden := _cost_burden(game, p, id) * 0.6
+		if not param(p, "legacy"):
+			# What building it will cost in cards discarded.
+			burden = _cost_burden(game, p, id) * card_worth(game, p) * param(p, "burden")
+		scored.append([card_value(game, p, id) - burden, id])
 	scored.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
 	var out := {"pick": scored[0][1]}
 	if decision.must_discard:
@@ -196,6 +328,8 @@ static func _build(game: DeckhandGame, p: int) -> Dictionary:
 	var threshold := 0.2 if game.hand_size(p) <= DeckhandGame.HAND_LIMIT else -0.8
 	if game.round_index == DeckhandGame.ROUNDS:
 		threshold = -0.5
+	if not param(p, "legacy"):
+		threshold = minf(threshold, param(p, "pass_threshold"))
 	if best.is_empty() or best_net < threshold:
 		return {"pass": true}
 	return best

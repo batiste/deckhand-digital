@@ -14,17 +14,17 @@ config/name="Deckhand"
 config/tags=PackedStringArray("experiment")
 run/main_scene="res://scenes/game/game.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
-config/icon="res://icon.png"
 boot_splash/bg_color=Color(0, 0, 0, 1)
 boot_splash/show_image=false
+config/icon="res://icon.png"
 
 [display]
 
 window/size/viewport_width=1600
 window/size/viewport_height=900
+window/size/mode=3
 window/size/window_width_override=1440
 window/size/window_height_override=810
-window/size/mode=3
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
@@ -32,15 +32,15 @@ window/stretch/aspect="expand"
 
 movie_writer/movie_file="result.avi"
 
-[rendering]
-
-renderer/rendering_method.mobile="gl_compatibility"
-environment/defaults/default_clear_color=Color(0, 0, 0, 1)
-textures/vram_compression/import_etc2_astc=true
-textures/default_filters/anisotropic_filtering_level=4
-anti_aliasing/quality/msaa_2d=3
-anti_aliasing/quality/screen_space_aa=1
-
 [gui]
 
 timers/tooltip_delay_sec=0.3
+
+[rendering]
+
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+textures/default_filters/anisotropic_filtering_level=4
+anti_aliasing/quality/msaa_2d=3
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)
+anti_aliasing/quality/screen_space_aa=1
