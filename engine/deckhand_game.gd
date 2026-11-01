@@ -800,10 +800,12 @@ func _task_battle(task: Dictionary) -> void:
 	var best := -1
 	var leaders: Array[int] = []
 	var parts: Array[String] = []
+	var scores := {}
 	for q: int in task.participants:
 		var built: int = players[q].built_this_step
 		var s := card_score(q, built) + symbol_count(q, "battles")
 		parts.append("%s %d" % [_name(q), s])
+		scores[q] = s
 		if s > best:
 			best = s
 			leaders = [q]
@@ -813,11 +815,11 @@ func _task_battle(task: Dictionary) -> void:
 	_log("Battle for %s: %s." % [_name(p), ", ".join(parts)])
 	if winner < 0:
 		_log("The Battle is a draw.")
-		event.emit("battle", {"player": p, "winner": -1})
+		event.emit("battle", {"player": p, "winner": -1, "scores": scores, "count": task.count})
 		return
 	var n := _draw_into_hand(winner, task.count)
 	_log("%s wins the Battle and draws %d." % [_name(winner), n])
-	event.emit("battle", {"player": p, "winner": winner})
+	event.emit("battle", {"player": p, "winner": winner, "scores": scores, "count": n})
 
 ## Tentacles break ties; returns -1 if still tied.
 func _break_tie(tied: Array[int]) -> int:

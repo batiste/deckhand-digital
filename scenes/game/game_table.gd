@@ -1635,7 +1635,7 @@ func _player_summary(p: int, icon_size: int, fresh: Array = []) -> String:
 			var icon: String = {"battles": "fx-battle", "hooks": "fx-hook", "compasses": "fx-compass"}[key]
 			extras += "  " + _tip(SYMBOL_TIPS[icon], "%s%d" % [_img(icon, icon_size), n])
 	if game.players[p].pending_battles > 0:
-		extras += "  [color=#ffb070]Battle pending ×%d[/color]" % game.players[p].pending_battles
+		extras += "  " + _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[p].pending_battles)
 	return "Banners %s     Produces %s     %s" % [banner_text, prod_text, extras]
 
 ## `bbcode` with a tooltip `text` on hover (in a label set up by _with_tips()).
@@ -1655,6 +1655,8 @@ static func _slot_tip(slot: Array, count: int) -> String:
 	for token: String in slot:
 		names.append(CardDB.RESOURCE_NAMES[token])
 	return "Your crew produces %s, %d %s. Each use pays for one card you build." % [" or ".join(names), count, "time" if count == 1 else "times"]
+
+const BATTLE_TIP := "A Battle announced by this pirate. It is fought on their next build: everyone who builds in that same step scores the card they built (+1 per Battle symbol in their crew), and the best draws a card. Players who don't build that step don't take part."
 
 const SYMBOL_TIPS := {
 	"fx-tentacle": "Tentacles: the most wins ties, for priority and at the end of the game.",
@@ -1858,7 +1860,7 @@ func _render_ledger() -> void:
 		cells.append(_tip(SYMBOL_TIPS["fx-compass"] + " %d left this draft." % game.compasses_available(_seat), "%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(_seat), compasses]))
 	text += _ledger_section("Symbols", cells, "")
 	if game.players[_seat].pending_battles > 0:
-		text += "[color=#ffb070]Battle pending ×%d[/color]" % game.players[_seat].pending_battles
+		text += _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[_seat].pending_battles)
 	_ledger_body.text = text
 
 func _ledger_section(title: String, cells: Array[String], empty: String) -> String:
@@ -2582,19 +2584,32 @@ func _animate_cards(snapshot: Dictionary) -> void:
 ## A band across the table announcing the round and the wind: it opens,
 ## holds a moment and fades, without blocking the mouse.
 func _round_title(round_number: int, wind: int, delay: float) -> void:
-	if is_instance_valid(_title_layer):
-		_title_layer.queue_free()
+	var title := "Round %d" % round_number if round_number < DeckhandGame.ROUNDS else "Final round"
+	var wind_text := "The wind blows %s" % ("clockwise  ↻" if wind == 1 else "counter-clockwise  ↺")
 	# The round's first choice (the draft) is dealt once the title has gone.
-	_hold_choices = true
+	_band(title, GOLD, wind_text, delay, true)
+
+## A band across the middle of the table: `title`, and a `subtitle` (BBCode)
+## under it. It opens, holds a moment and fades, letting clicks through.
+## Bands queue up behind one another; with `hold`, choices wait for it.
+func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool) -> void:
+	if hold:
+		_hold_choices = true
+	while is_instance_valid(_title_layer):
+		await _title_layer.tree_exited
 	var layer := CanvasLayer.new()
 	layer.layer = 6
 	add_child(layer)
 	_title_layer = layer
+	layer.tree_exited.connect(func() -> void:
+		if hold:
+			_hold_choices = _spotlights > 0
+			_queue_refresh())
 	var band := PanelContainer.new()
 	band.mouse_filter = MOUSE_FILTER_IGNORE
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.05, 0.035, 0.02, 0.86)
-	style.border_color = Color(0.85, 0.66, 0.32, 0.8)
+	style.border_color = Color(color, 0.8)
 	style.border_width_top = 2
 	style.border_width_bottom = 2
 	style.shadow_color = Color(0, 0, 0, 0.5)
@@ -2611,13 +2626,16 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 	lines.alignment = BoxContainer.ALIGNMENT_CENTER
 	lines.mouse_filter = MOUSE_FILTER_IGNORE
 	band.add_child(lines)
-	var title := _label("Round %d" % round_number if round_number < DeckhandGame.ROUNDS else "Final round", 46, GOLD, true)
+	var title := _label(title_text, 46, color, true)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_outline_color", Color(0.1, 0.05, 0.02))
 	title.add_theme_constant_override("outline_size", 8)
 	lines.add_child(title)
-	var sub := _label("The wind blows %s" % ("clockwise  ↻" if wind == 1 else "counter-clockwise  ↺"), 19, Color(0.95, 0.88, 0.72))
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var sub := _rich(19)
+	sub.fit_content = true
+	sub.mouse_filter = MOUSE_FILTER_IGNORE
+	sub.add_theme_color_override("default_color", Color(0.95, 0.88, 0.72))
+	sub.text = "[center]%s[/center]" % subtitle
 	lines.add_child(sub)
 	band.pivot_offset = Vector2(get_viewport_rect().size.x / 2.0, band.get_combined_minimum_size().y / 2.0)
 	band.modulate.a = 0.0
@@ -2626,12 +2644,34 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 	tween.tween_property(band, "modulate:a", 1.0, 0.25)
 	tween.parallel().tween_property(band, "scale:y", 1.0, 0.3).from(0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(title, "position:x", 0.0, 0.5).from(-60.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tween.tween_interval(1.1)
+	tween.tween_interval(1.1 if hold else 1.8)
 	tween.tween_property(band, "modulate:a", 0.0, 0.45)
-	tween.tween_callback(func() -> void:
-		layer.queue_free()
-		_hold_choices = _spotlights > 0
-		_queue_refresh())
+	tween.tween_callback(layer.queue_free)
+
+## A Battle is announced: when and how it will be fought.
+func _battle_announced(p: int) -> void:
+	var text := "It is fought on [b]your next build[/b]." if p == _seat else "It is fought on %s's next build." % _who(p)
+	text += "\nEveryone who builds then compares the card they built (+1 per Battle symbol); the best draws a card."
+	_band("You announce a Battle!" if p == _seat else "A Battle is announced!", Color(1.0, 0.55, 0.4), text, 0.0, false)
+
+## A Battle is fought: each builder's score, and who wins.
+func _battle_fought(p: int, winner: int, scores: Dictionary, count: int) -> void:
+	var parts: Array[String] = []
+	for q: int in scores:
+		var name := "You" if q == _seat else _who(q)
+		var score := "[b]%d[/b]" % scores[q]
+		if q == winner:
+			score = "[color=#ffd36b]%s[/color]" % score
+		parts.append("%s %s" % [name, score])
+	var outcome: String
+	if winner < 0:
+		outcome = "A draw: nobody draws."
+	elif winner == _seat:
+		outcome = "[color=#ffd36b]You win and draw %d.[/color]" % count
+	else:
+		outcome = "%s wins and draws %d." % [_who(winner), count]
+	var whose := "Your Battle" if p == _seat else "%s's Battle" % _who(p)
+	_band("Battle!", Color(1.0, 0.55, 0.4), "%s:   %s\n%s" % [whose, "   ·   ".join(parts), outcome], 0.0, false)
 
 ## A claimed Infamy card: shown mid-table ("Silver Ines claims it!"), then
 ## off to its new owner's crew, glowing, landing in a puff of gold.
@@ -2802,8 +2842,10 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
 		"battle_announce":
 			_sfx.play("battle", volume - 10.0)
+			_battle_announced(p)
 		"battle":
 			_sfx.play("battle")
+			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1))
 		"claim":
 			_sfx.play("claim", volume)
 			_claimed[info.card] = p

@@ -10,6 +10,7 @@ func _init() -> void:
 	test_payment()
 	test_full_games()
 	test_lockstep()
+	test_battles()
 	print("\n%s" % ("ALL TESTS PASSED" if failures == 0 else "%d FAILURE(S)" % failures))
 	quit(1 if failures > 0 else 0)
 
@@ -117,6 +118,39 @@ func test_lockstep() -> void:
 				break
 		check(in_step, "seed %d: lockstep copies diverged at action %d" % [seed_value, steps])
 		check(peer.phase == DeckhandGame.Phase.GAME_OVER and host.final_scores == peer.final_scores, "seed %d: lockstep copies end the same" % seed_value)
+
+## A Battle resolves only when the player who announced it builds again;
+## only players who built in that same step take part.
+func test_battles() -> void:
+	var stats := {"resolved": 0} # (a lambda cannot assign to a local)
+	var bad := []
+	for seed_value in range(60):
+		var seats: Array = []
+		for i in range(2 + seed_value % 4):
+			seats.append({"name": "P%d" % i, "bot": true})
+		var game := DeckhandGame.new()
+		game.setup(seats, 500 + seed_value, {})
+		game.logged.connect(func(text: String) -> void:
+			if text.begins_with("Battle for "):
+				# Logged when it resolves, before anyone draws: check who built.
+				var p := -1
+				for q in range(game.player_count()):
+					if text.begins_with("Battle for %s:" % game.players[q].name):
+						p = q
+				stats.resolved += 1
+				if p < 0 or game.players[p].built_this_step < 0:
+					bad.append("seed %d: %s" % [seed_value, text])
+				for q in range(game.player_count()):
+					if text.contains(game.players[q].name + " ") and q != p and game.players[q].built_this_step < 0:
+						bad.append("seed %d: %s took part without building" % [seed_value, game.players[q].name]))
+		game.start()
+		var guard := 0
+		while game.phase != DeckhandGame.Phase.GAME_OVER and guard < 5000:
+			guard += 1
+			var q: int = game.pending.keys()[0]
+			game.submit(q, DeckhandBot.decide(game, q))
+	check(stats.resolved > 0, "battles happen in simulated games (%d)" % stats.resolved)
+	check(bad.is_empty(), "battles resolve only on the announcer's build, among builders: %s" % [bad.slice(0, 3)])
 
 func check_conservation(game: DeckhandGame, seed_value: int) -> void:
 	var seen := {}
