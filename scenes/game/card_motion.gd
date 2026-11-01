@@ -29,6 +29,9 @@ static func pose_of(view: Control, face_up: bool = true) -> Dictionary:
 ##   fade_in / fade_out: fade the ghost while it travels.
 ##   duration: travel time.
 ##   zone: where the card is going, so a later refresh can retarget the flight.
+##   lift: how much the card grows mid-flight (default 0.05); arc: its rise in px.
+##   glow: a gold shimmer round the card while it flies.
+##   on_land: called with the destination pose when the card arrives.
 func fly(id: int, from: Dictionary, to: Dictionary, options: Dictionary = {}) -> void:
 	if _flights.has(id):
 		_land(id)
@@ -39,13 +42,16 @@ func fly(id: int, from: Dictionary, to: Dictionary, options: Dictionary = {}) ->
 	var target: CardView = options.get("target")
 	if target != null:
 		target.modulate.a = 0.0
-	var step := _step.bind(ghost, id, from, to, options.get("fade_in", false), options.get("fade_out", false))
+	if options.get("glow", false):
+		ghost.mark = CardView.Mark.CLAIMABLE
+		ghost.z_index = 1
+	var step := _step.bind(ghost, id, from, to, options)
 	step.call(0.0)
 	var tween := create_tween()
 	tween.tween_interval(options.get("delay", 0.0))
 	tween.tween_method(step, 0.0, 1.0, options.get("duration", TRAVEL))
 	tween.tween_callback(_land.bind(id))
-	_flights[id] = {"ghost": ghost, "tween": tween, "target": target, "to": to, "zone": options.get("zone", "")}
+	_flights[id] = {"ghost": ghost, "tween": tween, "target": target, "to": to, "zone": options.get("zone", ""), "on_land": options.get("on_land", Callable())}
 
 ## Flights heading to a card on the table, by card id:
 ## {pose: where the ghost is now, zone, face_up: the face it lands on}.
@@ -115,18 +121,47 @@ func _embers(at: Dictionary) -> void:
 	embers.emitting = true
 	embers.finished.connect(embers.queue_free)
 
+## A puff of gold dust at `center`, spread over `extent` (claims).
+func burst(center: Vector2, extent: Vector2, amount: int = 40) -> void:
+	var dust := CPUParticles2D.new()
+	dust.position = center
+	dust.one_shot = true
+	dust.explosiveness = 0.85
+	dust.amount = amount
+	dust.lifetime = 1.1
+	dust.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
+	dust.emission_rect_extents = extent / 2.0
+	dust.direction = Vector2.UP
+	dust.spread = 180.0
+	dust.gravity = Vector2(0.0, 40.0)
+	dust.initial_velocity_min = 40.0
+	dust.initial_velocity_max = 140.0
+	dust.damping_min = 60.0
+	dust.damping_max = 120.0
+	dust.scale_amount_min = 1.5
+	dust.scale_amount_max = 3.5
+	var ramp := Gradient.new()
+	ramp.set_color(0, Color(1.0, 0.95, 0.7, 1.0))
+	ramp.add_point(0.35, Color(1.0, 0.78, 0.3, 0.9))
+	ramp.set_color(1, Color(0.9, 0.55, 0.15, 0.0))
+	dust.color_ramp = ramp
+	add_child(dust)
+	dust.emitting = true
+	dust.finished.connect(dust.queue_free)
+
 ## Ends every flight at once (e.g. when a new game starts).
 func settle() -> void:
 	for id: int in _flights.keys():
 		_land(id)
 
-func _step(t: float, ghost: CardView, id: int, from: Dictionary, to: Dictionary, fade_in: bool, fade_out: bool) -> void:
+func _step(t: float, ghost: CardView, id: int, from: Dictionary, to: Dictionary, options: Dictionary) -> void:
 	var e: float = Tween.interpolate_value(0.0, 1.0, t, 1.0, Tween.TRANS_CUBIC, Tween.EASE_IN_OUT)
 	var arc := sin(PI * t)
-	var center: Vector2 = from.center.lerp(to.center, e) + Vector2(0.0, -ARC * arc)
+	var center: Vector2 = from.center.lerp(to.center, e) + Vector2(0.0, -options.get("arc", ARC) * arc)
 	ghost.position = center - ghost.size / 2.0
 	ghost.rotation = lerp_angle(from.rotation, to.rotation, e)
-	var s := lerpf(from.size.x / to.size.x, to.size.x / ghost.size.x, e) * (1.0 + 0.05 * arc)
+	var lift: float = options.get("lift", 0.05)
+	var s := lerpf(from.size.x / to.size.x, to.size.x / ghost.size.x, e) * (1.0 + lift * arc)
 	var sx := s
 	if from.face_up != to.face_up:
 		sx *= absf(cos(PI * e))
@@ -134,9 +169,9 @@ func _step(t: float, ghost: CardView, id: int, from: Dictionary, to: Dictionary,
 			ghost.set_card(id, to.face_up)
 	ghost.scale = Vector2(maxf(sx, 0.001), s)
 	var alpha := 1.0
-	if fade_in:
+	if options.get("fade_in", false):
 		alpha = minf(alpha, clampf(t * 3.0, 0.0, 1.0))
-	if fade_out:
+	if options.get("fade_out", false):
 		alpha = minf(alpha, 1.0 - smoothstep(0.55, 1.0, t))
 	ghost.modulate.a = alpha
 
@@ -146,4 +181,6 @@ func _land(id: int) -> void:
 	(flight.tween as Tween).kill()
 	if is_instance_valid(flight.target):
 		flight.target.modulate.a = 1.0
+	if flight.on_land.is_valid():
+		flight.on_land.call(flight.to)
 	flight.ghost.queue_free()

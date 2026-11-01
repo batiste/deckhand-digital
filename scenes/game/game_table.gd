@@ -11,9 +11,15 @@ const FONT_BOLD := "res://scenes/shared/fonts/signika/Signika-SemiBold.ttf"
 const HAND_CARD := Vector2(172, 235)
 const ROW_CARD := Vector2(126, 171)
 const PILE_CARD := Vector2(78, 106)
+## Offset of each card edge drawn under a deck, for its thickness.
+const PILE_STEP := Vector2(1.0, 2.0)
 const CREW_CARD := Vector2(128, 174)
 ## Height of a crew card left showing (banners, VP, title) when stacked.
 const CREW_PEEK := 49.0
+## Crew groups, in order, with their headings.
+const CREW_GROUPS := {"basic": "Basic", "advanced": "Advanced", "support": "Support", "infamy": "Infamy"}
+const CREW_MAX_COLUMNS := 6
+const RESOURCE_ORDER: Array[String] = ["g", "p", "r", "h", "s", "e", "cs", "c"]
 const OPP_CARD := Vector2(50, 68)
 const OPP_COLUMN_WIDTH := 340.0
 const OVERLAY_CARD := Vector2(180, 245)
@@ -32,6 +38,8 @@ const WOOD := "res://assets/ui/wood.jpg"
 const ROUNDED_SHADER := preload("res://scenes/game/rounded_panel.gdshader")
 const PARCHMENT := "res://assets/ui/parchment.jpg"
 const LOGO := "res://assets/new-logo.png"
+const PUBLISHER_LOGO := "res://assets/tidale-logo.png"
+const PUBLISHER_URL := "https://tidale.org/deckhand/"
 ## Music tracks. Each pass crossfades into the next over `crossfade`
 ## seconds (the intro ends at full volume); the gameplay track sits low,
 ## under the sound effects.
@@ -87,6 +95,7 @@ var _selected_windfall := false
 var _overlay_hidden := false # the player put the current choice aside to look at the table
 var _kb_hand := false # the focused hand card was chosen with the keyboard
 var _kb_card := -1 # card focused with the keyboard in a choice overlay
+var _badges_queued := false
 
 var _round_label: Label
 var _phase_label: Label
@@ -103,10 +112,11 @@ var _log: RichTextLabel
 var _overlay: Control
 var _overlay_body: VBoxContainer
 var _menu: Control
+var _credits: Control
 var _zoom_layer: CanvasLayer
 var _zoom_panel: PanelContainer
 var _zoom_card: CardView
-var _zoom_text: RichTextLabel
+var _zoom_info: VBoxContainer # the card's rules, under its picture
 var _sfx: Sfx
 var _music: AudioStreamPlayer # the pass playing now
 var _music_next: AudioStreamPlayer # the other one, for the crossfade
@@ -125,6 +135,9 @@ var _pile_views := {} # "supply" / "infamy" / "discard" -> CardView
 var _opp_panels := {} # player -> PanelContainer
 var _refresh_queued := false
 var _unplayed := {} # snapshot whose animation has not started yet
+var _title_layer: CanvasLayer # the round title on show, if any
+var _hold_choices := false # the round title is up: choices wait for it
+var _claimed := {} # Infamy card id -> claiming player, until its flight starts
 var _shown := {} # player -> {vp, banners} last displayed, to animate gains
 
 func _ready() -> void:
@@ -193,6 +206,8 @@ func _new_game() -> void:
 	_hand_pose.clear()
 	_unplayed = {}
 	_shown.clear()
+	_claimed.clear()
+	_hold_choices = false
 	game.start()
 
 func _process(delta: float) -> void:
@@ -318,7 +333,7 @@ func _build_ui() -> void:
 	_ledger_vp = _rich(16)
 	_ledger_vp.fit_content = true
 	ledger_v.add_child(_ledger_vp)
-	_ledger_body = _rich(15)
+	_ledger_body = _with_tips(_rich(15))
 	_ledger_body.fit_content = true
 	ledger_v.add_child(_ledger_body)
 
@@ -326,14 +341,23 @@ func _build_ui() -> void:
 	var crew_panel := _panel()
 	crew_panel.size_flags_horizontal = SIZE_EXPAND_FILL
 	home.add_child(crew_panel)
+	# "Your crew" as a large, faint title in the background of the panel.
+	var crew_title := _label("Your crew", 40, Color(1, 1, 1, 0.05), true)
+	crew_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	crew_title.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	crew_title.size_flags_horizontal = SIZE_FILL
+	crew_title.size_flags_vertical = SIZE_FILL
+	crew_panel.add_child(crew_title)
 	var crew_v := VBoxContainer.new()
 	crew_panel.add_child(crew_v)
-	crew_v.add_child(_label("Your crew", 14, MUTED))
 	var crew_scroll := ScrollContainer.new()
 	crew_scroll.size_flags_vertical = SIZE_EXPAND_FILL
+	# The layout always fits the panel; never show scroll bars.
+	crew_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
+	crew_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
 	crew_v.add_child(crew_scroll)
 	_crew_columns = HBoxContainer.new()
-	_crew_columns.add_theme_constant_override("separation", 10)
+	_crew_columns.add_theme_constant_override("separation", 18)
 	crew_scroll.add_child(_crew_columns)
 	# How many columns fit depends on the width.
 	crew_scroll.resized.connect(func() -> void:
@@ -515,6 +539,7 @@ func _build_menu() -> void:
 	var buttons := HBoxContainer.new()
 	buttons.add_theme_constant_override("separation", 10)
 	buttons.add_child(_button("Exit", func() -> void: get_tree().quit()))
+	buttons.add_child(_button("Credits", _show_credits))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = SIZE_EXPAND_FILL
 	buttons.add_child(spacer)
@@ -525,13 +550,113 @@ func _build_menu() -> void:
 	v.add_child(buttons)
 	_menu.set_meta("opponents", opp)
 	_menu.set_meta("resume", resume)
+	_build_credits()
 	_menu.set_meta("logo", logo)
 	_menu.set_meta("panel", panel)
+
+## Who made the game, from the rulebook's credits page.
+const CREDITS := [
+	["Game design", ["Batiste Bieler"]],
+	["Illustrations", ["Vitor Henrique", "Ricardo Zopello", "Batiste Bieler", "Mauri", "Toloma", "Daniel Cunha", "Marvin Blattert", "Matias Gonzalez"]],
+	["Iconography", ["Louise Fayt", "Batiste Bieler"]],
+	["Playtesting", ["Jessica Gibbons", "Gaël Nardin", "Jonathan Bieler", "Eduard Schäli", "Riccardo Zoppello", "Lucas Clark", "the Break My Game community", "and many others"]],
+	["Music", ["Composed with Suno"]],
+	["Sound effects", ["Synthesised for this game"]],
+	["Typeface", ["Signika, by Anna Giedryś (SIL Open Font License)"]],
+	["Engine", ["Made with the Godot Engine"]],
+]
+
+## The credits, over the menu: a wooden panel of names, closed with the
+## button, a click outside it or Esc.
+func _build_credits() -> void:
+	_credits = Control.new()
+	_credits.set_anchors_preset(PRESET_FULL_RECT)
+	_credits.visible = false
+	_menu.add_child(_credits)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.set_anchors_preset(PRESET_FULL_RECT)
+	dim.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed:
+			_credits.visible = false)
+	_credits.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(PRESET_FULL_RECT)
+	center.mouse_filter = MOUSE_FILTER_IGNORE
+	_credits.add_child(center)
+	var panel := _wood_panel(Color(0.5, 0.36, 0.24), true)
+	center.add_child(panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 14)
+	panel.add_child(v)
+	var title := _label("Credits", 30, GOLD, true)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(title)
+	var text := "[center]"
+	for section: Array in CREDITS:
+		text += "[color=#c9a76a][font_size=%d]%s[/font_size][/color]\n" % [_fs(14), section[0].to_upper()]
+		# Non-breaking spaces keep each name on one line.
+		var names: Array[String] = []
+		for name: String in section[1]:
+			names.append(name.replace(" ", "\u00a0"))
+		text += "%s\n\n" % "  ·  ".join(names)
+	var body := _rich(17)
+	body.fit_content = true
+	body.custom_minimum_size.x = 560
+	body.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
+	body.text = text.strip_edges() + "[/center]"
+	v.add_child(body)
+	# The publisher: its logo on a light plate (it is blue on white) and a
+	# link to the game's page.
+	var publisher := HBoxContainer.new()
+	publisher.alignment = BoxContainer.ALIGNMENT_CENTER
+	publisher.add_theme_constant_override("separation", 16)
+	v.add_child(publisher)
+	var plate := PanelContainer.new()
+	var plate_style := StyleBoxFlat.new()
+	plate_style.bg_color = Color(0.97, 0.94, 0.86)
+	plate_style.set_corner_radius_all(10)
+	plate_style.set_content_margin_all(8)
+	plate.add_theme_stylebox_override("panel", plate_style)
+	plate.mouse_default_cursor_shape = CURSOR_POINTING_HAND
+	plate.tooltip_text = PUBLISHER_URL
+	plate.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			OS.shell_open(PUBLISHER_URL))
+	publisher.add_child(plate)
+	var logo := TextureRect.new()
+	logo.texture = load(PUBLISHER_LOGO)
+	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	logo.custom_minimum_size = Vector2(76, 72)
+	logo.mouse_filter = MOUSE_FILTER_IGNORE
+	plate.add_child(logo)
+	var about := VBoxContainer.new()
+	about.alignment = BoxContainer.ALIGNMENT_CENTER
+	publisher.add_child(about)
+	about.add_child(_label("Published by Tidale", 17, Color(1, 0.93, 0.8), true))
+	var link := LinkButton.new()
+	link.text = PUBLISHER_URL.trim_prefix("https://")
+	link.uri = PUBLISHER_URL
+	link.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+	link.add_theme_font_size_override("font_size", _fs(16))
+	link.add_theme_color_override("font_color", GOLD)
+	link.add_theme_color_override("font_hover_color", Color(1, 0.93, 0.7))
+	link.add_theme_color_override("font_pressed_color", GOLD)
+	about.add_child(link)
+	var close := _button("Close", func() -> void: _credits.visible = false)
+	close.size_flags_horizontal = SIZE_SHRINK_CENTER
+	v.add_child(close)
+
+func _show_credits() -> void:
+	_credits.visible = true
+	_credits.modulate.a = 0.0
+	_credits.create_tween().tween_property(_credits, "modulate:a", 1.0, 0.2)
 
 func _open_menu() -> void:
 	(_menu.get_meta("opponents") as OptionButton).select(settings.opponents - 1)
 	(_menu.get_meta("resume") as Button).visible = game != null
-	_zoom_panel.visible = false
+	_hide_zoom(true)
 	_menu.visible = true
 
 ## First appearance of the title menu: fades in from the boot screen's dark
@@ -655,24 +780,36 @@ func _build_zoom() -> void:
 	_zoom_panel = PanelContainer.new()
 	var parchment := StyleBoxTexture.new()
 	parchment.texture = load(PARCHMENT)
-	parchment.set_content_margin_all(16)
 	_zoom_panel.add_theme_stylebox_override("panel", parchment)
+	# Rounded like the card on top of it, with a thin dark-ink rim.
+	var rounded := ShaderMaterial.new()
+	rounded.shader = ROUNDED_SHADER
+	rounded.set_shader_parameter("radius", ZOOM_CARD.x * 0.055)
+	rounded.set_shader_parameter("rim_color", Color(0.32, 0.2, 0.1, 0.55))
+	_zoom_panel.material = rounded
+	_zoom_panel.resized.connect(func() -> void: rounded.set_shader_parameter("size", _zoom_panel.size))
 	_zoom_panel.mouse_filter = MOUSE_FILTER_IGNORE
 	_zoom_panel.visible = false
 	_zoom_layer.add_child(_zoom_panel)
+	# The card edge to edge on top, its rules on the parchment below.
 	var v := VBoxContainer.new()
 	v.mouse_filter = MOUSE_FILTER_IGNORE
+	v.add_theme_constant_override("separation", 0)
 	_zoom_panel.add_child(v)
 	_zoom_card = CardView.make(1, ZOOM_CARD)
 	_zoom_card.interactive = false
 	_zoom_card.mouse_filter = MOUSE_FILTER_IGNORE
 	v.add_child(_zoom_card)
-	_zoom_text = _rich(15)
-	_zoom_text.fit_content = true
-	_zoom_text.custom_minimum_size.x = ZOOM_CARD.x
-	_zoom_text.mouse_filter = MOUSE_FILTER_IGNORE
-	_zoom_text.add_theme_color_override("default_color", INK)
-	v.add_child(_zoom_text)
+	var text_margin := MarginContainer.new()
+	text_margin.mouse_filter = MOUSE_FILTER_IGNORE
+	for side in ["left", "right", "top", "bottom"]:
+		text_margin.add_theme_constant_override("margin_" + side, 14)
+	v.add_child(text_margin)
+	_zoom_info = VBoxContainer.new()
+	_zoom_info.custom_minimum_size.x = ZOOM_CARD.x - 28
+	_zoom_info.mouse_filter = MOUSE_FILTER_IGNORE
+	_zoom_info.add_theme_constant_override("separation", 6)
+	text_margin.add_child(_zoom_info)
 
 func _make_theme() -> Theme:
 	var t := Theme.new()
@@ -705,6 +842,20 @@ func _make_theme() -> Theme:
 	focus.set_corner_radius_all(10)
 	focus.set_expand_margin_all(3)
 	t.set_stylebox("focus", "Button", focus)
+	# Check boxes: no button frame, a gold box with room before the label.
+	var plain := StyleBoxEmpty.new()
+	plain.content_margin_left = 2
+	plain.content_margin_top = 4
+	plain.content_margin_bottom = 4
+	for state in ["normal", "hover", "pressed", "hover_pressed", "disabled", "focus"]:
+		t.set_stylebox(state, "CheckBox", plain)
+	t.set_constant("h_separation", "CheckBox", 12)
+	t.set_icon("unchecked", "CheckBox", _check_icon(false))
+	t.set_icon("checked", "CheckBox", _check_icon(true))
+	t.set_color("font_color", "CheckBox", Color(1, 0.93, 0.8))
+	t.set_color("font_hover_color", "CheckBox", Color(1, 0.97, 0.9))
+	t.set_color("font_pressed_color", "CheckBox", Color(1, 0.93, 0.8))
+	t.set_color("font_hover_pressed_color", "CheckBox", Color(1, 0.97, 0.9))
 	t.set_color("font_color", "Button", Color(1, 0.93, 0.8))
 	t.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
 	var track := StyleBoxFlat.new()
@@ -721,10 +872,60 @@ func _make_theme() -> Theme:
 	filled.content_margin_bottom = 4
 	var filled_hover := filled.duplicate()
 	filled_hover.bg_color = Color(1.0, 0.8, 0.42)
+	var tip := StyleBoxFlat.new()
+	tip.bg_color = Color(0.93, 0.86, 0.7)
+	tip.border_color = Color(0.45, 0.3, 0.15)
+	tip.set_border_width_all(1)
+	tip.set_corner_radius_all(8)
+	tip.set_content_margin_all(10)
+	tip.shadow_color = Color(0, 0, 0, 0.4)
+	tip.shadow_size = 8
+	t.set_stylebox("panel", "TooltipPanel", tip)
+	t.set_color("font_color", "TooltipLabel", INK)
+	t.set_font_size("font_size", "TooltipLabel", _fs(15))
 	t.set_stylebox("slider", "HSlider", track)
 	t.set_stylebox("grabber_area", "HSlider", filled)
 	t.set_stylebox("grabber_area_highlight", "HSlider", filled_hover)
 	return t
+
+## A check box drawn in the menu's colours: a rounded gold-rimmed square,
+## filled gold with a dark tick when checked.
+static func _check_icon(checked: bool) -> ImageTexture:
+	var size := roundi(22 * TEXT_SCALE)
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var half := size / 2.0
+	var gold := Color(0.92, 0.72, 0.36)
+	for y in size:
+		for x in size:
+			# Signed distance to a rounded square, for smooth edges.
+			var q := Vector2(absf(x + 0.5 - half), absf(y + 0.5 - half)) - Vector2(half - 4.5, half - 4.5)
+			var d := Vector2(maxf(q.x, 0.0), maxf(q.y, 0.0)).length() + minf(maxf(q.x, q.y), 0.0) - 3.0
+			var inside := clampf(0.5 - d, 0.0, 1.0)
+			var rim := clampf(0.5 - absf(d + 1.0), 0.0, 1.0)
+			var fill := gold if checked else Color(0.12, 0.08, 0.04)
+			var c := fill.lerp(gold, rim)
+			c.a = inside
+			img.set_pixel(x, y, c)
+	if checked:
+		# The tick: two thick strokes.
+		var ink := Color(0.16, 0.1, 0.04)
+		var a := Vector2(size * 0.27, size * 0.52)
+		var b := Vector2(size * 0.43, size * 0.68)
+		var c2 := Vector2(size * 0.74, size * 0.33)
+		for y in size:
+			for x in size:
+				var p := Vector2(x + 0.5, y + 0.5)
+				var dist := minf(_segment_distance(p, a, b), _segment_distance(p, b, c2))
+				var cover := clampf(size * 0.075 + 0.5 - dist, 0.0, 1.0)
+				if cover > 0.0:
+					var base := img.get_pixel(x, y)
+					img.set_pixel(x, y, Color(base.lerp(ink, cover), base.a))
+	return ImageTexture.create_from_image(img)
+
+static func _segment_distance(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var t := clampf((p - a).dot(ab) / ab.dot(ab), 0.0, 1.0)
+	return p.distance_to(a + ab * t)
 
 # --- Small builders ---------------------------------------------------------
 
@@ -810,6 +1011,7 @@ func _primary(button: Button) -> Button:
 		style.bg_color = states[state]
 		style.border_color = Color(0.5, 0.85, 0.45)
 		button.add_theme_stylebox_override(state, style)
+	button.set_meta("primary", true)
 	return button
 
 func _card(id: int, card_size: Vector2, face_up: bool = true) -> CardView:
@@ -855,8 +1057,9 @@ func _refresh() -> void:
 	if not is_same(decision, _decision):
 		_decision = decision
 		_reset_input()
-	# Hovered cards may be rebuilt below without an exit event.
-	_zoom_panel.visible = false
+	# Hovered cards may be rebuilt below without an exit event. (If the same
+	# card is hovered again this frame, the zoom simply stays.)
+	_hide_zoom()
 	var snapshot := _capture_cards()
 	_render_top()
 	_render_row()
@@ -957,13 +1160,30 @@ func _render_piles() -> void:
 		var v := VBoxContainer.new()
 		_piles_box.add_child(v)
 		var id: int = 1 if spec[3] else 13
+		# The pile's thickness: card edges under the top card, one per ~10 cards.
+		var layers := clampi(ceili(spec[1] / 10.0) - 1, 0, 6)
+		var pile := Control.new()
+		pile.custom_minimum_size = PILE_CARD + Vector2(PILE_STEP.x, PILE_STEP.y) * 6
+		v.add_child(pile)
+		for i in range(layers, 0, -1):
+			var edge := Panel.new()
+			var paper := StyleBoxFlat.new()
+			paper.bg_color = Color(0.8, 0.74, 0.62).darkened(0.06 * i)
+			paper.border_color = Color(0.3, 0.2, 0.1, 0.7)
+			paper.set_border_width_all(1)
+			paper.set_corner_radius_all(int(PILE_CARD.x * 0.06))
+			edge.add_theme_stylebox_override("panel", paper)
+			edge.size = PILE_CARD - Vector2(4, 4)
+			edge.position = Vector2(2, 2) + PILE_STEP * i
+			edge.mouse_filter = MOUSE_FILTER_IGNORE
+			pile.add_child(edge)
 		var view := CardView.make(id, PILE_CARD, false)
 		view.interactive = false
 		_pile_views[spec[0].to_lower()] = view
 		view.set_caption(str(spec[1]))
 		if spec[1] == 0:
 			view.modulate.a = 0.25
-		v.add_child(view)
+		pile.add_child(view)
 		var caption := _label(spec[0], 13, MUTED)
 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		v.add_child(caption)
@@ -975,20 +1195,46 @@ func _player_summary(p: int, icon_size: int, fresh: Array = []) -> String:
 	for b in CardDB.BANNERS:
 		if banners[b] > 0:
 			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
-			parts.append("%s%s" % [_banner(b, icon_size + 2), count])
+			parts.append(_tip(_banner_tip(b), "%s%s" % [_banner(b, icon_size + 2), count]))
 	var banner_text := " ".join(parts) if not parts.is_empty() else "[color=#8a96a6]no banners[/color]"
 	var prod: Array[String] = []
 	for group: Array in _production_groups(p):
-		prod.append("%s%d" % [_slot_icons(group[0], icon_size), group[1]])
+		prod.append(_tip(_slot_tip(group[0], group[1]).replace("Your crew", "Their crew"), "%s%d" % [_slot_icons(group[0], icon_size), group[1]]))
 	var prod_text := " ".join(prod) if not prod.is_empty() else "[color=#8a96a6]none[/color]"
-	var extras := "%s%d" % [_img("fx-tentacle", icon_size), game.tentacles(p)]
+	var extras := _tip(SYMBOL_TIPS["fx-tentacle"], "%s%d" % [_img("fx-tentacle", icon_size), game.tentacles(p)])
 	for key in ["battles", "hooks", "compasses"]:
 		var n := game.symbol_count(p, key)
 		if n > 0:
-			extras += "  %s%d" % [_img({"battles": "fx-battle", "hooks": "fx-hook", "compasses": "fx-compass"}[key], icon_size), n]
+			var icon: String = {"battles": "fx-battle", "hooks": "fx-hook", "compasses": "fx-compass"}[key]
+			extras += "  " + _tip(SYMBOL_TIPS[icon], "%s%d" % [_img(icon, icon_size), n])
 	if game.players[p].pending_battles > 0:
 		extras += "  [color=#ffb070]Battle pending ×%d[/color]" % game.players[p].pending_battles
 	return "Banners %s     Produces %s     %s" % [banner_text, prod_text, extras]
+
+## `bbcode` with a tooltip `text` on hover (in a label set up by _with_tips()).
+static func _tip(text: String, bbcode: String) -> String:
+	return '[hint="%s"]%s[/hint]' % [text.replace('"', "'"), bbcode]
+
+## A label whose _tip() tooltips show without Godot's dashed underline.
+static func _with_tips(label: RichTextLabel) -> RichTextLabel:
+	label.hint_underlined = false
+	return label
+
+static func _banner_tip(banner: String) -> String:
+	return "%s banner. Raised banners let you claim Infamy cards, and some cards score per banner." % CardDB.BANNER_NAMES[banner]
+
+static func _slot_tip(slot: Array, count: int) -> String:
+	var names: Array[String] = []
+	for token: String in slot:
+		names.append(CardDB.RESOURCE_NAMES[token])
+	return "Your crew produces %s, %d %s. Each use pays for one card you build." % [" or ".join(names), count, "time" if count == 1 else "times"]
+
+const SYMBOL_TIPS := {
+	"fx-tentacle": "Tentacles: the most wins ties, for priority and at the end of the game.",
+	"fx-battle": "Battles in your crew add +1 to your built card in each Battle.",
+	"fx-hook": "Hooks: with 3, you keep the card you steal.",
+	"fx-compass": "Compass: once per draft each, draw an extra draft card, then discard one before passing.",
+}
 
 ## Identical production slots together: [[slot, count], ...] in crew order.
 func _production_groups(p: int) -> Array:
@@ -1032,7 +1278,7 @@ func _render_opponents() -> void:
 			"windfall ✓" if pl.windfall >= 0 else "no windfall"]
 		v.add_child(head)
 		var fresh := _show_gains(p, head, template, Vector2(0.0, head.get_theme_font("normal_font").get_height(_fs(16))), 0.75)
-		var summary := _rich(13)
+		var summary := _with_tips(_rich(13))
 		summary.fit_content = true
 		summary.text = _player_summary(p, 15, fresh).replace("     ", "\n")
 		v.add_child(summary)
@@ -1052,77 +1298,108 @@ func _render_crew() -> void:
 	if pl.crew.is_empty():
 		_crew_columns.add_child(_label("Built cards join your crew here. Their production pays for later builds.", 15, MUTED))
 		return
-	# One column per banner (a card's first one), then cards without a
-	# banner, then claimed Infamy; each stacked with only its top showing.
-	var keys: Array = CardDB.BANNERS.duplicate()
-	keys.append_array(["", "infamy"])
-	var columns := {}
+	# Grouped by what the cards produce, each group under a small heading.
+	# A deep group continues in a column beside its first.
+	var groups := {}
 	for id: int in pl.crew:
-		var card := CardDB.get_card(id)
-		var key: String = "infamy" if card.kind == "infamy" else card.banners[0] if not card.banners.is_empty() else ""
-		if not columns.has(key):
-			columns[key] = []
-		columns[key].append(id)
+		var group := _crew_group(id)
+		if not groups.has(group):
+			groups[group] = []
+		groups[group].append(id)
 	var stacks: Array = []
-	for key: String in keys:
-		if columns.has(key):
-			stacks.append(columns[key])
-	# Fit the panel both ways: split columns too tall for its height, stack
-	# neighbours together when there are too many for its width, and as a last
-	# resort show less of each card.
+	var titles: Array[String] = []
+	for group: String in CREW_GROUPS:
+		if groups.has(group):
+			var ids: Array = groups[group]
+			# Identical producers side by side (stable: build order otherwise).
+			var order := func(id: int) -> int:
+				var tokens := CardDB.production_tokens(id)
+				return RESOURCE_ORDER.find(tokens[0]) if not tokens.is_empty() else RESOURCE_ORDER.size()
+			var keyed: Array = []
+			for i in ids.size():
+				keyed.append([order.call(ids[i]), i, ids[i]])
+			keyed.sort()
+			stacks.append(keyed.map(func(k: Array) -> int: return k[2]))
+			titles.append(CREW_GROUPS[group])
 	var area: Vector2 = (_crew_columns.get_parent() as Control).size
-	var fit := maxi(1, int((area.x + 10.0) / (CREW_CARD.x + 10.0)))
-	var tallest := maxi(1, int((area.y - CREW_CARD.y) / CREW_PEEK) + 1)
-	var split: Array = []
-	for stack: Array in stacks:
-		for start in range(0, stack.size(), tallest):
-			split.append(stack.slice(start, start + tallest))
-	stacks = split
-	while stacks.size() > fit:
-		var best := -1
-		for i in range(stacks.size() - 1):
-			var merged: int = stacks[i].size() + stacks[i + 1].size()
-			if merged <= tallest and (best < 0 or merged < stacks[best].size() + stacks[best + 1].size()):
-				best = i
-		if best < 0:
-			break
-		stacks[best] = stacks[best] + stacks[best + 1]
-		stacks.remove_at(best + 1)
-	var deepest := 1
-	for stack: Array in stacks:
-		deepest = maxi(deepest, stack.size())
-	var peek := CREW_PEEK
-	if stacks.size() > fit:
-		# Still too wide: deeper columns, showing less of each card.
-		var per_column := ceili(float(_count_cards(stacks)) / fit)
-		stacks = _rebalance(stacks, per_column)
-		deepest = per_column
-	if deepest > 1:
-		peek = clampf((area.y - CREW_CARD.y) / (deepest - 1), 24.0, CREW_PEEK)
-	for stack: Array in stacks:
-		var column := VBoxContainer.new()
-		column.add_theme_constant_override("separation", int(peek - CREW_CARD.y))
-		_crew_columns.add_child(column)
-		for id: int in stack:
-			var view := _card(id, CREW_CARD)
-			view.interactive = false
-			column.add_child(view)
+	var probe := _label("Basic", 13)
+	var heading_height := probe.get_combined_minimum_size().y
+	probe.free()
+	area.y -= heading_height + 2.0
+	var layout := _crew_layout(stacks, area)
+	var card_size: Vector2 = layout.card
+	for i in stacks.size():
+		var stack: Array = stacks[i]
+		var group_box := VBoxContainer.new()
+		group_box.add_theme_constant_override("separation", 2)
+		_crew_columns.add_child(group_box)
+		group_box.add_child(_label(titles[i], 13, MUTED))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		group_box.add_child(row)
+		for start in range(0, stack.size(), layout.depth):
+			var column := VBoxContainer.new()
+			# Rounded down, so a column never comes out taller than planned.
+			column.add_theme_constant_override("separation", floori(layout.peek - card_size.y))
+			row.add_child(column)
+			var parts := stack.slice(start, start + layout.depth)
+			for k in parts.size():
+				var id: int = parts[k]
+				# Laid by hand: every other card a touch left, then right,
+				# slightly turned (the same each time for a given card).
+				var holder := Control.new()
+				holder.custom_minimum_size = card_size
+				holder.mouse_filter = MOUSE_FILTER_IGNORE
+				column.add_child(holder)
+				var view := _card(id, card_size)
+				view.interactive = false
+				var wobble := (hash(id) % 1000) / 1000.0
+				view.position.x = (-1.0 if k % 2 == 0 else 1.0) * (2.0 + 2.5 * wobble)
+				view.rotation_degrees = (wobble - 0.5) * 1.6
+				holder.add_child(view)
 
-static func _count_cards(stacks: Array) -> int:
-	var n := 0
-	for stack: Array in stacks:
-		n += stack.size()
-	return n
+## Which crew group a card goes in (see CREW_GROUPS).
+static func _crew_group(id: int) -> String:
+	if CardDB.is_infamy(id):
+		return "infamy"
+	var tokens := CardDB.production_tokens(id)
+	for token in ["h", "s", "e"]:
+		if tokens.has(token):
+			return "advanced"
+	for token in ["g", "p", "r"]:
+		if tokens.has(token):
+			return "basic"
+	return "support"
 
-## Refills `stacks` in order into columns of `per_column` cards.
-static func _rebalance(stacks: Array, per_column: int) -> Array:
-	var flat: Array = []
+## The largest crew card size (down to 65%) at which `stacks` fit in `area`
+## in at most CREW_MAX_COLUMNS columns: {card: size, peek: height of each
+## card showing, depth: cards per column}.
+func _crew_layout(stacks: Array, area: Vector2) -> Dictionary:
+	var scale := 1.0
+	while true:
+		var card := (CREW_CARD * scale).round()
+		var room := area.y - card.y
+		# As deep as the full peek allows; deeper (overlapping more) only to
+		# stay within the column limit.
+		var depth := maxi(1, int(room / (CREW_PEEK * scale)) + 1)
+		var most := maxi(1, int(room / (maxf(24.0, CREW_PEEK * 0.6) * scale)) + 1)
+		while depth < most and _crew_columns_needed(stacks, depth) > CREW_MAX_COLUMNS:
+			depth += 1
+		var columns := _crew_columns_needed(stacks, depth)
+		var width := columns * (card.x + 10.0) + (stacks.size() - 1) * 8.0
+		if (columns <= CREW_MAX_COLUMNS and width <= area.x) or scale <= 0.65:
+			var peek := CREW_PEEK * scale
+			if depth > 1:
+				peek = minf(peek, room / (depth - 1))
+			return {"card": card, "peek": peek, "depth": depth}
+		scale -= 0.05
+	return {}
+
+static func _crew_columns_needed(stacks: Array, depth: int) -> int:
+	var columns := 0
 	for stack: Array in stacks:
-		flat.append_array(stack)
-	var out: Array = []
-	for start in range(0, flat.size(), per_column):
-		out.append(flat.slice(start, start + per_column))
-	return out
+		columns += ceili(float(stack.size()) / depth)
+	return columns
 
 ## The left column: your VP, then banners, production and symbols, each
 ## kind of icon once with its count.
@@ -1134,20 +1411,20 @@ func _render_ledger() -> void:
 	for b in CardDB.BANNERS:
 		if banners[b] > 0:
 			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
-			cells.append("%s %s" % [_banner(b, 21), count])
+			cells.append(_tip(_banner_tip(b), "%s %s" % [_banner(b, 21), count]))
 	var text := _ledger_section("Banners", cells, "none raised")
 	cells = []
 	for group: Array in _production_groups(HUMAN):
-		cells.append("%s %d" % [_slot_icons(group[0], 20), group[1]])
+		cells.append(_tip(_slot_tip(group[0], group[1]), "%s %d" % [_slot_icons(group[0], 20), group[1]]))
 	text += _ledger_section("Produces", cells, "nothing yet")
-	cells = ["%s %d" % [_img("fx-tentacle", 20), game.tentacles(HUMAN)]]
+	cells = [_tip(SYMBOL_TIPS["fx-tentacle"], "%s %d" % [_img("fx-tentacle", 20), game.tentacles(HUMAN)])]
 	var compasses := game.symbol_count(HUMAN, "compasses")
 	for spec in [["battles", "fx-battle"], ["hooks", "fx-hook"]]:
 		var n := game.symbol_count(HUMAN, spec[0])
 		if n > 0:
-			cells.append("%s %d" % [_img(spec[1], 20), n])
+			cells.append(_tip(SYMBOL_TIPS[spec[1]], "%s %d" % [_img(spec[1], 20), n]))
 	if compasses > 0:
-		cells.append("%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(HUMAN), compasses])
+		cells.append(_tip(SYMBOL_TIPS["fx-compass"] + " %d left this draft." % game.compasses_available(HUMAN), "%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(HUMAN), compasses]))
 	text += _ledger_section("Symbols", cells, "")
 	if game.players[HUMAN].pending_battles > 0:
 		text += "[color=#ffb070]Battle pending ×%d[/color]" % game.players[HUMAN].pending_battles
@@ -1161,7 +1438,8 @@ func _ledger_section(title: String, cells: Array[String], empty: String) -> Stri
 		return text + "[color=#8a96a6]%s[/color]\n" % empty + gap
 	text += "[table=3]"
 	for cell in cells:
-		text += "[cell padding=0,0,10,0]%s[/cell]" % cell
+		# Equal columns, so a wide entry does not push the others apart.
+		text += "[cell expand=1 padding=0,0,6,0]%s[/cell]" % cell
 	return text + "[/table]\n" + gap
 
 ## Hand order: windfall first, then hand, then draft picks.
@@ -1300,6 +1578,7 @@ func _set_buttons(specs: Array) -> void:
 	_clear(_buttons)
 	for spec in specs:
 		_buttons.add_child(_button(spec[0], spec[1], spec[2] if spec.size() > 2 else true))
+	_queue_key_badges()
 
 func _render_action() -> void:
 	var decision: Variant = game.pending.get(HUMAN)
@@ -1324,7 +1603,10 @@ func _render_action() -> void:
 				CardDB.title(decision.stolen), _who(decision.target)]
 			_set_buttons([])
 		_:
-			if _overlay_hidden:
+			if _hold_choices:
+				_action_text.text = ""
+				_set_buttons([])
+			elif _overlay_hidden:
 				_action_text.text = "[color=#8a96a6]Your choice is put aside — look around the table, then bring it back.[/color]"
 				_set_buttons([["Show the choice", _toggle_overlay]])
 			else:
@@ -1403,13 +1685,17 @@ func _show_overlay(title: String, subtitle: String) -> HBoxContainer:
 func _overlay_buttons(specs: Array) -> void:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 10)
+	row.add_theme_constant_override("separation", 14)
 	for spec in specs:
 		var button := _button(spec[0], spec[1], spec[2] if spec.size() > 2 else true)
 		if spec.size() > 3 and spec[3]:
 			_primary(button)
+		# Bigger than the action bar's: these are the choice being made.
+		button.add_theme_font_size_override("font_size", _fs(19))
+		button.custom_minimum_size = Vector2(130, 48)
 		row.add_child(button)
 	_overlay_body.add_child(row)
+	_queue_key_badges()
 
 func _overlay_card(parent: Control, id: int, on_click: Callable, face_up: bool = true, card_size: Vector2 = OVERLAY_CARD) -> CardView:
 	var view := _card(id, card_size, face_up)
@@ -1429,7 +1715,7 @@ func _render_overlay() -> void:
 		_render_game_over()
 		return
 	var decision: Variant = game.pending.get(HUMAN)
-	if decision == null:
+	if decision == null or _hold_choices:
 		return
 	match decision.type:
 		"mulligan":
@@ -1746,7 +2032,11 @@ func _animate_cards(snapshot: Dictionary) -> void:
 		var old: Dictionary = poses.get(view.card_id, {})
 		var zone := _zone_of(view)
 		if not old.is_empty():
-			_motion.fly(view.card_id, old, to, {"target": view, "zone": zone})
+			var options := {"target": view, "zone": zone}
+			if _claimed.has(view.card_id):
+				_claimed.erase(view.card_id)
+				options.merge(_claim_flight())
+			_motion.fly(view.card_id, old, to, options)
 			continue
 		if zone == "overlay" and draft_passed:
 			# The next draft hand slides in from the neighbour passing it.
@@ -1767,6 +2057,67 @@ func _animate_cards(snapshot: Dictionary) -> void:
 			from.size *= 0.8
 			_motion.fly(view.card_id, from, to, {"target": view, "zone": zone, "fade_in": true, "duration": 0.3})
 
+## A band across the table announcing the round and the wind: it opens,
+## holds a moment and fades, without blocking the mouse.
+func _round_title(round_number: int, wind: int, delay: float) -> void:
+	if is_instance_valid(_title_layer):
+		_title_layer.queue_free()
+	# The round's first choice (the draft) is dealt once the title has gone.
+	_hold_choices = true
+	var layer := CanvasLayer.new()
+	layer.layer = 6
+	add_child(layer)
+	_title_layer = layer
+	var band := PanelContainer.new()
+	band.mouse_filter = MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.035, 0.02, 0.86)
+	style.border_color = Color(0.85, 0.66, 0.32, 0.8)
+	style.border_width_top = 2
+	style.border_width_bottom = 2
+	style.shadow_color = Color(0, 0, 0, 0.5)
+	style.shadow_size = 30
+	style.content_margin_top = 18
+	style.content_margin_bottom = 18
+	band.add_theme_stylebox_override("panel", style)
+	band.set_anchors_preset(PRESET_CENTER)
+	band.anchor_left = 0.0
+	band.anchor_right = 1.0
+	band.grow_vertical = GROW_DIRECTION_BOTH
+	layer.add_child(band)
+	var lines := VBoxContainer.new()
+	lines.alignment = BoxContainer.ALIGNMENT_CENTER
+	lines.mouse_filter = MOUSE_FILTER_IGNORE
+	band.add_child(lines)
+	var title := _label("Round %d" % round_number if round_number < DeckhandGame.ROUNDS else "Final round", 46, GOLD, true)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_color_override("font_outline_color", Color(0.1, 0.05, 0.02))
+	title.add_theme_constant_override("outline_size", 8)
+	lines.add_child(title)
+	var sub := _label("The wind blows %s" % ("clockwise  ↻" if wind == 1 else "counter-clockwise  ↺"), 19, Color(0.95, 0.88, 0.72))
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lines.add_child(sub)
+	band.pivot_offset = Vector2(get_viewport_rect().size.x / 2.0, band.get_combined_minimum_size().y / 2.0)
+	band.modulate.a = 0.0
+	var tween := band.create_tween()
+	tween.tween_interval(delay)
+	tween.tween_property(band, "modulate:a", 1.0, 0.25)
+	tween.parallel().tween_property(band, "scale:y", 1.0, 0.3).from(0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(title, "position:x", 0.0, 0.5).from(-60.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_interval(1.1)
+	tween.tween_property(band, "modulate:a", 0.0, 0.45)
+	tween.tween_callback(func() -> void:
+		layer.queue_free()
+		_hold_choices = false
+		_queue_refresh())
+
+## A claimed Infamy card lifts high, glowing, and lands in a puff of gold.
+func _claim_flight() -> Dictionary:
+	return {
+		"duration": 1.0, "lift": 0.45, "arc": 90.0, "glow": true,
+		"on_land": func(pose: Dictionary) -> void: _motion.burst(pose.center, pose.size),
+	}
+
 func _animate_vanished(id: int, from: Dictionary, anchors: Dictionary) -> void:
 	var to := from.duplicate()
 	var holder := -1
@@ -1786,6 +2137,13 @@ func _animate_vanished(id: int, from: Dictionary, anchors: Dictionary) -> void:
 		to = anchors[holder]
 	else:
 		to.size *= 0.8
+	if _claimed.has(id):
+		# Claimed by an opponent: it rises from the Row and goes to them.
+		_claimed.erase(id)
+		var options := _claim_flight()
+		options.fade_out = true
+		_motion.fly(id, from, to, options)
+		return
 	_motion.fly(id, from, to, {"fade_out": true})
 
 # --- Input ------------------------------------------------------------------
@@ -1797,6 +2155,8 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 	match kind:
 		"round_start":
 			_sfx.play("bell", -3.0)
+			# The first round's card waits for the table to fade in.
+			_round_title(game.round_index, game.wind(), 1.3 if _curtain.visible else 0.0)
 		"reveal":
 			_sfx.play("reveal")
 		"deal":
@@ -1823,6 +2183,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_sfx.play("battle")
 		"claim":
 			_sfx.play("claim", volume)
+			_claimed[info.card] = p
 		"lost":
 			_sfx.play("reveal", -8.0)
 		"game_end":
@@ -1894,15 +2255,18 @@ func _flash(text: String) -> void:
 
 # --- Keyboard ---------------------------------------------------------------
 # Esc: menu.  Left / Right: move between cards (the choice, else the hand).
-# Enter / Space: play the focused card.  H: hide or show the choice.
-# Tab: move between buttons (Enter presses the focused one).
+# Enter / Space: play the focused card, or else press the green button.
+# H: hide or show the choice.  Each button has its own key, shown on it
+# (the first free letter of its label, else a digit).  Tab still works.
 
 func _input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed:
 		return
 	var key: Key = (event as InputEventKey).keycode
 	if key == KEY_ESCAPE:
-		if _menu.visible and game != null:
+		if _credits.visible:
+			_credits.visible = false
+		elif _menu.visible and game != null:
 			_menu.visible = false
 		elif not _menu.visible:
 			_open_menu()
@@ -1921,7 +2285,10 @@ func _input(event: InputEvent) -> void:
 			if (_overlay.visible or _overlay_hidden) and game.phase != DeckhandGame.Phase.GAME_OVER:
 				_toggle_overlay()
 		_:
-			return
+			var button := _button_for_key(key)
+			if button == null:
+				return
+			button.pressed.emit()
 	get_viewport().set_input_as_handled()
 
 ## The cards arrows move between: the open choice's cards, else the hand.
@@ -1964,6 +2331,86 @@ func _activate_focus() -> void:
 	var view := _focused_card()
 	if view != null and view.interactive:
 		view.clicked.emit(view)
+		return
+	for button in _visible_buttons():
+		if button.has_meta("primary") and not button.disabled:
+			button.pressed.emit()
+			return
+
+## The buttons on screen: the open choice's first, then the action bar's.
+func _visible_buttons() -> Array[Button]:
+	var out: Array[Button] = []
+	var roots: Array[Node] = []
+	if _overlay.visible and not _overlay_hidden:
+		roots.append(_overlay_body)
+	roots.append(_buttons)
+	for node in roots:
+		for button in node.find_children("*", "Button", true, false):
+			if button.is_visible_in_tree() and not button is OptionButton and not button.is_queued_for_deletion():
+				out.append(button)
+	return out
+
+func _button_for_key(key: Key) -> Button:
+	for button in _visible_buttons():
+		if button.get_meta("key", KEY_NONE) == key and not button.disabled:
+			return button
+	return null
+
+## Gives the buttons on screen their keys once this frame's rendering is done.
+func _queue_key_badges() -> void:
+	if not _badges_queued:
+		_badges_queued = true
+		_assign_keys.call_deferred()
+
+func _assign_keys() -> void:
+	_badges_queued = false
+	# Keys with another meaning are never handed out.
+	var taken := {KEY_H: true, KEY_SPACE: true}
+	for button in _visible_buttons():
+		var key := KEY_NONE
+		var label := button.text.to_upper()
+		if label.begins_with("HIDE") or label.begins_with("SHOW THE"):
+			key = KEY_H
+		else:
+			for c in label:
+				var k := OS.find_keycode_from_string(c)
+				if c >= "A" and c <= "Z" and not taken.has(k):
+					key = k
+					break
+			if key == KEY_NONE:
+				for d in range(1, 10):
+					if not taken.has(KEY_0 + d):
+						key = KEY_0 + d
+						break
+		taken[key] = true
+		button.set_meta("key", key)
+		_badge(button, OS.get_keycode_string(key))
+
+## A small key cap in the button's corner.
+func _badge(button: Button, text: String) -> void:
+	var badge: Label = button.get_node_or_null("KeyBadge")
+	if badge == null:
+		badge = Label.new()
+		badge.name = "KeyBadge"
+		badge.mouse_filter = MOUSE_FILTER_IGNORE
+		badge.add_theme_font_size_override("font_size", _fs(11))
+		badge.add_theme_color_override("font_color", Color(0.12, 0.08, 0.03))
+		var cap := StyleBoxFlat.new()
+		cap.bg_color = Color(1.0, 0.84, 0.5, 0.92)
+		cap.set_corner_radius_all(4)
+		cap.content_margin_left = 4
+		cap.content_margin_right = 4
+		badge.add_theme_stylebox_override("normal", cap)
+		button.add_child(badge)
+	badge.text = text
+	# Pinned to the top-right corner, overhanging it a little.
+	var cap_size := badge.get_combined_minimum_size()
+	badge.anchor_left = 1.0
+	badge.anchor_right = 1.0
+	badge.offset_left = -cap_size.x * 0.6
+	badge.offset_right = cap_size.x * 0.4
+	badge.offset_top = -cap_size.y * 0.45
+	badge.offset_bottom = cap_size.y * 0.55
 
 ## Lifts the overlay card chosen with the keyboard.
 func _show_overlay_focus() -> void:
@@ -1988,9 +2435,11 @@ func _on_card_hovered(view: CardView, from_keyboard: bool = false) -> void:
 	var in_choice := from_keyboard and _overlay.is_ancestor_of(view)
 	_zoom_card.visible = not in_hand and not in_choice
 	_zoom_card.set_card(view.card_id)
-	_zoom_text.text = _describe(view.card_id)
-	_zoom_panel.visible = true
+	_describe(view.card_id)
+	_show_zoom()
 	_zoom_panel.reset_size()
+	# Shrink-wrap again once the text has been laid out.
+	_zoom_panel.reset_size.call_deferred()
 	var screen := get_viewport_rect().size
 	var mouse := get_viewport().get_mouse_position()
 	if from_keyboard:
@@ -2013,50 +2462,149 @@ func _on_card_hovered(view: CardView, from_keyboard: bool = false) -> void:
 		y = minf(rect.end.y + 40.0, screen.y - panel_size.y - 8.0)
 	_zoom_panel.position = Vector2(x, y)
 
+## Fades the card zoom in, carrying on from wherever a fade-out had got to.
+func _show_zoom() -> void:
+	if _zoom_panel.has_meta("fade"):
+		(_zoom_panel.get_meta("fade") as Tween).kill()
+	if not _zoom_panel.visible:
+		_zoom_panel.modulate.a = 0.0
+		_zoom_panel.visible = true
+	var fade := _zoom_panel.create_tween()
+	fade.tween_property(_zoom_panel, "modulate:a", 1.0, 0.1)
+	_zoom_panel.set_meta("fade", fade)
+
+func _hide_zoom(at_once: bool = false) -> void:
+	if _zoom_panel.has_meta("fade"):
+		(_zoom_panel.get_meta("fade") as Tween).kill()
+	if at_once or not _zoom_panel.visible:
+		_zoom_panel.visible = false
+		return
+	var fade := _zoom_panel.create_tween()
+	fade.tween_property(_zoom_panel, "modulate:a", 0.0, 0.1)
+	fade.tween_callback(func() -> void: _zoom_panel.visible = false)
+	_zoom_panel.set_meta("fade", fade)
+
 func _on_card_unhovered(view: CardView) -> void:
 	if _zoom_card.card_id == view.card_id:
-		_zoom_panel.visible = false
+		_hide_zoom()
 
-func _describe(id: int) -> String:
+## Short wording of the effects, for the card tooltip.
+const EFFECT_SHORT := {
+	"draw-1": "Draw 1 card.",
+	"draw-2": "Draw 2 cards.",
+	"3-choices": "Draw 3, keep 1.",
+	"telescope": "Look at a face-down Row card and the top Infamy card; you may swap them.",
+	"compass": "Once per draft: draw 1 extra draft card, then discard 1.",
+	"hook": "Steal a random card from a rival; give one back unless you have 3 Hooks.",
+	"battle": "On your next build, the best built card (+1 per Battle) draws 1.",
+}
+
+## Fills the card tooltip with `id`'s rules: a title line, then sections
+## of label / icons rows, separated by thin lines.
+func _describe(id: int) -> void:
+	_clear(_zoom_info)
 	var card := CardDB.get_card(id)
-	var lines: Array[String] = ["[b]%s[/b]" % card.title]
-	if card.kind == "infamy":
-		var req := ""
-		for b: String in card.cost:
-			req += _banner(b, 20)
-		lines.append("Infamy — claim with raised banners: %s" % req)
-	else:
-		var cost := ""
-		for token: String in card.cost:
-			cost += _res(token)
-		lines.append("Cost: %s" % cost)
-		if not card.production.is_empty():
-			var prod: Array[String] = []
-			for slot: Array in card.production:
-				var alt: Array[String] = []
-				for token: String in slot:
-					alt.append(_res(token))
-				prod.append(" | ".join(alt))
-			lines.append("Produces: %s" % "  ".join(prod))
-		if not card.banners.is_empty():
-			var banners := ""
-			for b: String in card.banners:
-				banners += _banner(b)
-			lines.append("Raised banners: %s" % banners)
+	var head := "[b]%s[/b]" % card.title
 	if card.vp > 0:
-		lines.append("[color=#8a3b12]%d VP[/color]" % card.vp)
+		head += "   [color=#8a3b12][b]%d VP[/b][/color]" % card.vp
+	_info_text(head, 17)
+
+	var rows: Array = []
+	if card.kind == "infamy":
+		var need := []
+		for b: String in card.cost:
+			need.append(_banner(b, 20))
+		rows.append(["Claim with", _icons(need)])
+	else:
+		var cost := []
+		for token: String in card.cost:
+			cost.append(_res(token, 18))
+		rows.append(["Cost", _icons(cost)])
+		if not card.production.is_empty():
+			var prod := []
+			for slot: Array in card.production:
+				prod.append(_slot_icons(slot, 18))
+			rows.append(["Produces", _icons(prod)])
+		if not card.banners.is_empty():
+			var banners := []
+			for b: String in card.banners:
+				banners.append(_banner(b, 18))
+			rows.append(["Banners", _icons(banners)])
+	_info_rows(rows)
+
+	# Effects: an icon column, then the text (wrapping under itself).
+	var effects: Array = []
 	if card.multiplier != null:
-		lines.append("[color=#8a3b12]%d VP per raised %s[/color] banner (end of game)" % [card.multiplier.vp, _banner(card.multiplier.banner)])
+		effects.append([_banner(card.multiplier.banner, 18), "[color=#8a3b12][b]+%d VP[/b][/color] per raised banner at the end" % card.multiplier.vp])
 	if card.tentacles > 0:
-		lines.append("%s Tentacle: wins ties." % _img("fx-tentacle"))
+		effects.append([_img("fx-tentacle", 16), "Wins ties."])
 	for effect: String in card.effects:
-		lines.append("%s %s" % [_img(EFFECT_ICONS[effect]), EFFECT_TEXT[effect]])
+		effects.append([_img(EFFECT_ICONS[effect], 16), EFFECT_SHORT[effect]])
 	if card.trigger != null:
-		var on: String = _img("fx-tentacle") if card.trigger.on == "tentacle" else _banner(card.trigger.on)
-		lines.append("Each time you add %s to your crew: %s" % [on, EFFECT_TEXT[card.trigger.effect]])
-	if game != null and card.kind == "supply" and game.players[HUMAN].crew.has(id) == false:
-		lines.append("[color=#7a6248]Discard value: a coin%s[/color]" % (", or reveal for one of its resources" if not card.production.is_empty() else ""))
-	return "\n".join(lines)
+		var on: String = _img("fx-tentacle", 16) if card.trigger.on == "tentacle" else _banner(card.trigger.on, 18)
+		effects.append([on, "Each time you add one: %s" % EFFECT_SHORT[card.trigger.effect]])
+	if not effects.is_empty():
+		_info_line()
+		for row: Array in effects:
+			_info_effect(row[0], row[1])
+
+	if game != null and card.kind == "supply" and not game.players[HUMAN].crew.has(id):
+		# What discarding it pays: a coin, or (revealed) one of its resources.
+		var options := [_res("cs", 16), _res("c", 16)]
+		for token in CardDB.production_tokens(id):
+			if not token in ["cs", "c"]:
+				options.append(_res(token, 16))
+		_info_line()
+		_info_rows([["Discard", "[color=#7a6248]/[/color]".join(options)]], 0.75)
+
+## Icons with even spacing between them.
+static func _icons(parts: Array) -> String:
+	return " ".join(parts)
+
+func _info_text(bbcode: String, font_size: int) -> RichTextLabel:
+	var label := _rich(font_size)
+	label.fit_content = true
+	# Its width up front, so its height is measured with the right wrapping.
+	label.custom_minimum_size.x = _zoom_info.custom_minimum_size.x
+	label.mouse_filter = MOUSE_FILTER_IGNORE
+	label.add_theme_color_override("default_color", INK)
+	label.text = bbcode
+	_zoom_info.add_child(label)
+	return label
+
+## Rows of [label, icons]: labels small and muted in a column of their own.
+func _info_rows(rows: Array, alpha: float = 1.0) -> void:
+	if rows.is_empty():
+		return
+	var text := "[table=2]"
+	for row: Array in rows:
+		text += "[cell padding=0,2,12,2][color=#7a6248][font_size=%d]%s[/font_size][/color][/cell][cell padding=0,2,0,2]%s[/cell]" % [_fs(13), row[0], row[1]]
+	_info_text(text + "[/table]", 15).modulate.a = alpha
+
+## One effect: its icon, then its text wrapping in a block of its own.
+func _info_effect(icon: String, text: String) -> void:
+	const ICON_WIDTH := 30.0
+	var row := HBoxContainer.new()
+	row.mouse_filter = MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 6)
+	_zoom_info.add_child(row)
+	var icon_label := _info_text(icon, 15)
+	icon_label.custom_minimum_size.x = ICON_WIDTH
+	icon_label.size_flags_horizontal = SIZE_SHRINK_BEGIN
+	icon_label.reparent(row)
+	var body := _info_text(text, 15)
+	body.custom_minimum_size.x = _zoom_info.custom_minimum_size.x - ICON_WIDTH - 6
+	body.reparent(row)
+
+func _info_line() -> void:
+	var line := HSeparator.new()
+	var style := StyleBoxLine.new()
+	style.color = Color(0.45, 0.3, 0.15, 0.3)
+	style.thickness = 1
+	line.add_theme_stylebox_override("separator", style)
+	line.add_theme_constant_override("separation", 4)
+	line.mouse_filter = MOUSE_FILTER_IGNORE
+	_zoom_info.add_child(line)
 
 func _append_log(text: String) -> void:
 	var colored := text
