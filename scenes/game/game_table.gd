@@ -2,8 +2,9 @@ extends Control
 ## The single-player table: renders a DeckhandGame and turns clicks into
 ## decisions for seat 0. Every other seat is played by DeckhandBot.
 
-const HUMAN := 0
 const BOT_DELAY := 0.45
+## Online: how long a player may be away before the host's bots play for them.
+const ABSENT_GRACE := 15.0
 const ICONS := "res://assets/icons/"
 const FONT_REGULAR := "res://scenes/shared/fonts/signika/Signika-Regular.ttf"
 const FONT_BOLD := "res://scenes/shared/fonts/signika/Signika-SemiBold.ttf"
@@ -39,7 +40,7 @@ const ROUNDED_SHADER := preload("res://scenes/game/rounded_panel.gdshader")
 const PARCHMENT := "res://assets/ui/parchment.jpg"
 const LOGO := "res://assets/new-logo.png"
 const PUBLISHER_LOGO := "res://assets/tidale-logo.png"
-const PUBLISHER_URL := "https://tidale.org/deckhand/"
+const PUBLISHER_URL := "https://tidale.org/deckhand-race-for-infamy/"
 ## Music tracks. Each pass crossfades into the next over `crossfade`
 ## seconds (the intro ends at full volume); the gameplay track sits low,
 ## under the sound effects.
@@ -78,6 +79,17 @@ const EFFECT_ICONS := {
 }
 
 var game: DeckhandGame
+## Your seat at the table: 0 offline; online, the seat the relay gave you.
+var _seat := 0
+
+# Online play (see NetClient): every machine runs the game in lockstep.
+var _net: NetClient
+var _online := false
+var _seats: Array = [] # the relay's seats: {name, bot, owner}
+var _applied := 0 # actions from the relay applied so far
+var _sent := {} # seat -> the decision a move was already sent for
+var _absent_since := {} # player id -> when they dropped out (msec)
+var _replaying := false # catching up on a game: no sounds or titles
 var settings := {"opponents": 2, "solo": false, "beginner": false}
 
 var _bot_wait := 0.0
@@ -113,6 +125,8 @@ var _overlay: Control
 var _overlay_body: VBoxContainer
 var _menu: Control
 var _credits: Control
+var _online_panel: Control
+var _online_ui := {} # the online panel's controls, by name
 var _zoom_layer: CanvasLayer
 var _zoom_panel: PanelContainer
 var _zoom_card: CardView
@@ -144,6 +158,21 @@ func _ready() -> void:
 	CardDB.ensure_loaded()
 	_sfx = Sfx.new()
 	add_child(_sfx)
+	_net = NetClient.new()
+	add_child(_net)
+	_net.welcomed.connect(func(_id: int, _code: String) -> void: _render_online())
+	_net.lobby_changed.connect(_on_lobby_changed)
+	_net.started.connect(_on_net_started)
+	_net.acted.connect(_on_net_acted)
+	_net.desynced.connect(func(_n: int) -> void:
+		_flash("Out of step with the table: catching up.")
+		_net.join(_net.code, _player_name()))
+	_net.failed.connect(func(message: String) -> void:
+		_online_status(message)
+		_flash(message))
+	_net.disconnected.connect(func() -> void:
+		if _online:
+			_flash("Connection lost: reconnecting…"))
 	_music = AudioStreamPlayer.new()
 	_music.bus = "Music"
 	add_child(_music)
@@ -167,25 +196,23 @@ func _ready() -> void:
 
 # --- Game lifecycle ---------------------------------------------------------
 
-## From the menu: fade to black, set the table up, and fade it in.
-func _start_game() -> void:
+## From the menu: fade to black, set the table up (`begin`), and fade it in.
+func _start_game(begin: Callable = _new_game) -> void:
 	if _curtain.visible:
 		return
 	_curtain.visible = true
 	_curtain.modulate.a = 0.0
 	var tween := create_tween()
 	tween.tween_property(_curtain, "modulate:a", 1.0, 0.45)
-	tween.tween_callback(_new_game)
+	tween.tween_callback(begin)
 	# Let the deal settle behind the curtain first.
 	tween.tween_interval(0.5)
 	tween.tween_property(_curtain, "modulate:a", 0.0, 1.1).set_trans(Tween.TRANS_SINE)
 	tween.tween_callback(func() -> void: _curtain.visible = false)
 
+## A game against bots on this machine.
 func _new_game() -> void:
-	_menu.visible = false
-	_play_music(GAME_MUSIC, 2.0)
-	# The first deal, reveal and bot moves happen at once: keep them quiet.
-	_sfx.hush(2.5)
+	_leave_online()
 	var seats: Array = [{"name": "Captain", "bot": false}]
 	if settings.solo:
 		seats.append({"name": "The Phantom Crew", "bot": true, "virtual": true})
@@ -194,8 +221,15 @@ func _new_game() -> void:
 		names.shuffle()
 		for i in range(settings.opponents):
 			seats.append({"name": names[i], "bot": true})
+	_begin(seats, -1, {"solo_variant": settings.solo, "beginner_draft": settings.beginner})
+
+func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
+	_menu.visible = false
+	_play_music(GAME_MUSIC, 2.0)
+	# The first deal, reveal and bot moves happen at once: keep them quiet.
+	_sfx.hush(2.5)
 	game = DeckhandGame.new()
-	game.setup(seats, -1, {"solo_variant": settings.solo, "beginner_draft": settings.beginner})
+	game.setup(seats, seed_value, options)
 	game.changed.connect(_queue_refresh)
 	game.logged.connect(_append_log)
 	game.event.connect(_on_game_event)
@@ -213,7 +247,9 @@ func _new_game() -> void:
 func _process(delta: float) -> void:
 	if game == null or game.phase == DeckhandGame.Phase.GAME_OVER:
 		return
-	var bots: Array = game.pending.keys().filter(func(p: int) -> bool: return p != HUMAN)
+	var drive := _bot_seats()
+	var bots: Array = game.pending.keys().filter(func(p: int) -> bool:
+		return drive.has(p) and not (_sent.has(p) and is_same(_sent[p], game.pending[p])))
 	if bots.is_empty():
 		return
 	var p: int = bots[0]
@@ -225,6 +261,13 @@ func _process(delta: float) -> void:
 		if _bot_wait > 0.0:
 			return
 	_bot_wait = BOT_DELAY
+	if _online:
+		var move := DeckhandBot.decide(game, p)
+		if not game.validate(p, move).is_empty() and decision.type == "build":
+			move = {"pass": true}
+		_sent[p] = decision
+		_net.send_action(p, move)
+		return
 	var error := game.submit(p, DeckhandBot.decide(game, p))
 	if not error.is_empty():
 		push_error("Bot %d %s rejected: %s" % [p, decision.type, error])
@@ -232,9 +275,99 @@ func _process(delta: float) -> void:
 			game.submit(p, {"pass": true})
 
 func _submit(action: Dictionary) -> void:
-	var error := game.submit(HUMAN, action)
-	if not error.is_empty():
-		_flash(error)
+	if not _online:
+		var error := game.submit(_seat, action)
+		if not error.is_empty():
+			_flash(error)
+		return
+	# Online: checked here, played when the relay sends it back to everyone.
+	var problem := game.validate(_seat, action)
+	if not problem.is_empty():
+		_flash(problem)
+		return
+	var decision: Dictionary = game.pending[_seat]
+	if _sent.has(_seat) and is_same(_sent[_seat], decision):
+		return
+	_sent[_seat] = decision
+	_net.send_action(_seat, action)
+
+## The seats this machine plays for the bots: all but yours offline; online,
+## on the host's machine, the bots and players who have been away a while.
+func _bot_seats() -> Array:
+	var out := []
+	for p in range(game.player_count()):
+		if p == _seat:
+			continue
+		if not _online:
+			out.append(p)
+		elif _net.is_host() and _seat_absent(p):
+			out.append(p)
+	return out
+
+func _seat_absent(p: int) -> bool:
+	var seat: Dictionary = _seats[p]
+	if seat.bot:
+		return true
+	var since: int = _absent_since.get(seat.owner, -1)
+	return since >= 0 and (Time.get_ticks_msec() - since) / 1000.0 > ABSENT_GRACE
+
+# --- Online ------------------------------------------------------------------
+
+func _on_net_started(seed_value: int, seats: Array, options: Dictionary, actions: Array) -> void:
+	var begin := func() -> void:
+		_online = true
+		_seats = seats
+		_seat = 0
+		for i in seats.size():
+			if seats[i].owner == _net.player_id:
+				_seat = i
+		_applied = 0
+		_sent.clear()
+		_online_panel.visible = false
+		var engine_seats := seats.map(func(seat: Dictionary) -> Dictionary: return {"name": seat.name, "bot": seat.bot})
+		# Catching up (rejoining): replay the game so far, quietly.
+		_replaying = not actions.is_empty()
+		_begin(engine_seats, seed_value, options)
+		for entry: Dictionary in actions:
+			game.submit(entry.seat, entry.action)
+		_applied = actions.size()
+		_replaying = false
+	if _online and game != null and game.phase != DeckhandGame.Phase.GAME_OVER:
+		begin.call() # reconnected mid-game: no curtain
+	else:
+		_start_game(begin)
+
+func _on_net_acted(n: int, seat: int, action: Dictionary) -> void:
+	if not _online or game == null or n < _applied:
+		return
+	if n > _applied:
+		# Missed one: rejoining sends the whole game again.
+		_net.join(_net.code, _player_name())
+		return
+	game.submit(seat, action)
+	_applied += 1
+	_sent.erase(seat)
+	if _applied % 5 == 0:
+		_net.send_checksum(_applied, game.checksum())
+
+func _on_lobby_changed(players: Array, _host: int, _started: bool) -> void:
+	var now := Time.get_ticks_msec()
+	for player: Dictionary in players:
+		if player.online:
+			_absent_since.erase(player.id)
+		elif not _absent_since.has(player.id):
+			_absent_since[player.id] = now
+	_render_online()
+	if _online and game != null:
+		_queue_refresh()
+
+func _leave_online() -> void:
+	_net.leave()
+	_online = false
+	_seat = 0
+	_seats = []
+	_sent.clear()
+	_absent_since.clear()
 
 # --- UI construction --------------------------------------------------------
 
@@ -546,11 +679,13 @@ func _build_menu() -> void:
 	var resume := _button("Resume", func() -> void: _menu.visible = false)
 	resume.name = "Resume"
 	buttons.add_child(resume)
+	buttons.add_child(_button("Play online", _show_online))
 	buttons.add_child(_button("New game", _start_game))
 	v.add_child(buttons)
 	_menu.set_meta("opponents", opp)
 	_menu.set_meta("resume", resume)
 	_build_credits()
+	_build_online()
 	_menu.set_meta("logo", logo)
 	_menu.set_meta("panel", panel)
 
@@ -568,30 +703,38 @@ const CREDITS := [
 
 ## The credits, over the menu: a wooden panel of names, closed with the
 ## button, a click outside it or Esc.
-func _build_credits() -> void:
-	_credits = Control.new()
-	_credits.set_anchors_preset(PRESET_FULL_RECT)
-	_credits.visible = false
-	_menu.add_child(_credits)
+## A panel over the dimmed menu, closed by `close` (also on a click outside
+## it). Returns [the sheet, its content box].
+func _menu_sheet(title_text: String, close: Callable) -> Array:
+	var sheet := Control.new()
+	sheet.set_anchors_preset(PRESET_FULL_RECT)
+	sheet.visible = false
+	_menu.add_child(sheet)
 	var dim := ColorRect.new()
 	dim.color = Color(0, 0, 0, 0.55)
 	dim.set_anchors_preset(PRESET_FULL_RECT)
 	dim.gui_input.connect(func(event: InputEvent) -> void:
 		if event is InputEventMouseButton and event.pressed:
-			_credits.visible = false)
-	_credits.add_child(dim)
+			close.call())
+	sheet.add_child(dim)
 	var center := CenterContainer.new()
 	center.set_anchors_preset(PRESET_FULL_RECT)
 	center.mouse_filter = MOUSE_FILTER_IGNORE
-	_credits.add_child(center)
+	sheet.add_child(center)
 	var panel := _wood_panel(Color(0.5, 0.36, 0.24), true)
 	center.add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 14)
 	panel.add_child(v)
-	var title := _label("Credits", 30, GOLD, true)
+	var title := _label(title_text, 30, GOLD, true)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(title)
+	return [sheet, v]
+
+func _build_credits() -> void:
+	var sheet := _menu_sheet("Credits", func() -> void: _credits.visible = false)
+	_credits = sheet[0]
+	var v: VBoxContainer = sheet[1]
 	var text := "[center]"
 	for section: Array in CREDITS:
 		text += "[color=#c9a76a][font_size=%d]%s[/font_size][/color]\n" % [_fs(14), section[0].to_upper()]
@@ -647,6 +790,192 @@ func _build_credits() -> void:
 	var close := _button("Close", func() -> void: _credits.visible = false)
 	close.size_flags_horizontal = SIZE_SHRINK_CENTER
 	v.add_child(close)
+
+## Play online: create or join a table, then wait in its lobby for the host
+## to start. See _render_online() for what shows when.
+func _build_online() -> void:
+	var sheet := _menu_sheet("Play online", _close_online)
+	_online_panel = sheet[0]
+	var v: VBoxContainer = sheet[1]
+	v.custom_minimum_size.x = 520
+	var ui := _online_ui
+
+	# Before joining: your name, then create or join.
+	var join := VBoxContainer.new()
+	join.add_theme_constant_override("separation", 12)
+	v.add_child(join)
+	ui.join = join
+	var name_row := HBoxContainer.new()
+	name_row.add_child(_label("Your name", 17))
+	var name_edit := LineEdit.new()
+	name_edit.max_length = 24
+	name_edit.text = _player_name()
+	name_edit.size_flags_horizontal = SIZE_EXPAND_FILL
+	name_edit.text_changed.connect(func(text: String) -> void: _save_setting("online", "name", text))
+	name_row.add_child(name_edit)
+	join.add_child(name_row)
+	ui.name = name_edit
+	var create := _button("Create a table", func() -> void:
+		_online_status("Creating a table…")
+		_net.create_table(func(code: String) -> void:
+			if code.is_empty():
+				_online_status("Could not reach the server.")
+			else:
+				_net.join(code, _player_name())))
+	_primary(create)
+	join.add_child(create)
+	var join_row := HBoxContainer.new()
+	join_row.add_theme_constant_override("separation", 10)
+	join_row.add_child(_label("or join with a code", 16, MUTED))
+	var code_edit := LineEdit.new()
+	code_edit.max_length = 5
+	code_edit.placeholder_text = "ABCDE"
+	code_edit.custom_minimum_size.x = 110
+	code_edit.text_changed.connect(func(text: String) -> void:
+		var caret := code_edit.caret_column
+		code_edit.text = text.to_upper()
+		code_edit.caret_column = caret)
+	join_row.add_child(code_edit)
+	var join_button := _button("Join", func() -> void:
+		if code_edit.text.strip_edges().length() < 5:
+			_online_status("Codes have 5 letters.")
+			return
+		_online_status("Joining…")
+		_net.join(code_edit.text, _player_name()))
+	join_row.add_child(join_button)
+	code_edit.text_submitted.connect(func(_t: String) -> void: join_button.pressed.emit())
+	join.add_child(join_row)
+
+	# At a table: its code, who is there, and (for the host) the start.
+	var table := VBoxContainer.new()
+	table.add_theme_constant_override("separation", 12)
+	v.add_child(table)
+	ui.table = table
+	var code_row := HBoxContainer.new()
+	code_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	code_row.add_theme_constant_override("separation", 12)
+	code_row.add_child(_label("Table", 18, MUTED))
+	var code_label := _label("", 34, GOLD, true)
+	code_row.add_child(code_label)
+	ui.code = code_label
+	code_row.add_child(_button("Copy", func() -> void:
+		DisplayServer.clipboard_set(_net.code)
+		_online_status("Code copied: send it to your crew.")))
+	table.add_child(code_row)
+	var players := _rich(17)
+	players.fit_content = true
+	players.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
+	table.add_child(players)
+	ui.players = players
+	var host_row := HBoxContainer.new()
+	host_row.add_theme_constant_override("separation", 12)
+	host_row.add_child(_label("Bots", 17))
+	var bots := OptionButton.new()
+	host_row.add_child(bots)
+	ui.bots = bots
+	var beginner := CheckBox.new()
+	beginner.text = "Beginner draft"
+	host_row.add_child(beginner)
+	ui.beginner = beginner
+	table.add_child(host_row)
+	ui.host_row = host_row
+	var start := _button("Start the game", func() -> void:
+		_net.start_game(bots.get_selected_id(), {"beginner_draft": beginner.button_pressed}))
+	_primary(start)
+	start.size_flags_horizontal = SIZE_SHRINK_CENTER
+	table.add_child(start)
+	ui.start = start
+
+	var status := _label("", 15, MUTED)
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(status)
+	ui.status = status
+	var bottom := HBoxContainer.new()
+	bottom.alignment = BoxContainer.ALIGNMENT_CENTER
+	bottom.add_theme_constant_override("separation", 10)
+	var leave := _button("Leave the table", func() -> void:
+		_leave_online()
+		_online_status("")
+		_render_online())
+	bottom.add_child(leave)
+	ui.leave = leave
+	bottom.add_child(_button("Close", _close_online))
+	v.add_child(bottom)
+
+## Shows the online panel in the state of the connection.
+func _render_online() -> void:
+	if _online_panel == null:
+		return
+	var ui := _online_ui
+	var at_table := _net.player_id >= 0
+	ui.join.visible = not at_table
+	ui.table.visible = at_table
+	ui.leave.visible = at_table
+	if not at_table:
+		return
+	ui.code.text = _net.code
+	var lines: Array[String] = []
+	var humans := 0
+	for player: Dictionary in _net.players:
+		humans += 1
+		var mark := "[color=#8fe388]●[/color]" if player.online else "[color=#8a96a6]○[/color]"
+		var tags := ""
+		if player.id == _net.host:
+			tags += "  [color=#c9a76a](host)[/color]"
+		if player.id == _net.player_id:
+			tags += "  [color=#c9a76a](you)[/color]"
+		lines.append("%s  %s%s" % [mark, player.name, tags])
+	ui.players.text = "\n".join(lines)
+	var hosting := _net.is_host()
+	ui.host_row.visible = hosting
+	ui.start.visible = hosting
+	var bots: OptionButton = ui.bots
+	var keep := bots.get_selected_id() if bots.item_count > 0 else (1 if humans < 2 else 0)
+	bots.clear()
+	for n in range(0, 5 - humans + 1):
+		bots.add_item("%d" % n, n)
+	bots.select(clampi(keep, 0, bots.item_count - 1))
+	ui.start.disabled = humans + bots.get_selected_id() < 2
+	if not bots.item_selected.is_connected(_on_bots_selected):
+		bots.item_selected.connect(_on_bots_selected)
+	if not hosting:
+		_online_status("Waiting for the host to start the game…")
+	elif humans < 2:
+		_online_status("Share the code, or add bots and start.")
+	else:
+		_online_status("")
+
+func _on_bots_selected(_index: int) -> void:
+	_render_online()
+
+func _show_online() -> void:
+	_render_online()
+	_online_panel.visible = true
+	_online_panel.modulate.a = 0.0
+	_online_panel.create_tween().tween_property(_online_panel, "modulate:a", 1.0, 0.2)
+
+## Closing the panel before the game starts leaves the table.
+func _close_online() -> void:
+	_online_panel.visible = false
+	if not _online:
+		_leave_online()
+		_online_status("")
+
+func _online_status(text: String) -> void:
+	if _online_ui.has("status"):
+		_online_ui.status.text = text
+
+func _player_name() -> String:
+	var config := ConfigFile.new()
+	config.load(NetClient.SETTINGS)
+	return config.get_value("online", "name", "")
+
+func _save_setting(section: String, key: String, value: Variant) -> void:
+	var config := ConfigFile.new()
+	config.load(NetClient.SETTINGS)
+	config.set_value(section, key, value)
+	config.save(NetClient.SETTINGS)
 
 func _show_credits() -> void:
 	_credits.visible = true
@@ -1053,7 +1382,7 @@ func _refresh() -> void:
 	_refresh_queued = false
 	if game == null:
 		return
-	var decision: Variant = game.pending.get(HUMAN)
+	var decision: Variant = game.pending.get(_seat)
 	if not is_same(decision, _decision):
 		_decision = decision
 		_reset_input()
@@ -1126,12 +1455,12 @@ func _render_row() -> void:
 		v.add_child(stack)
 		for id: int in slot.cards:
 			var view := _card(id, ROW_CARD)
-			if game.can_claim(HUMAN, id):
+			if game.can_claim(_seat, id):
 				view.mark = CardView.Mark.CLAIMABLE
 			stack.add_child(view)
 		var need := ""
 		for id: int in slot.cards:
-			need += _requirement_progress(HUMAN, id) + " "
+			need += _requirement_progress(_seat, id) + " "
 		var req := _rich(13)
 		req.fit_content = true
 		req.custom_minimum_size.x = ROW_CARD.x
@@ -1258,7 +1587,9 @@ func _slot_icons(slot: Array, icon_size: int) -> String:
 
 func _render_opponents() -> void:
 	_clear(_opponents_box)
-	for p in range(1, game.player_count()):
+	for p in range(game.player_count()):
+		if p == _seat:
+			continue
 		var pl: Dictionary = game.players[p]
 		var panel := _panel()
 		_opponents_box.add_child(panel)
@@ -1271,6 +1602,8 @@ func _render_opponents() -> void:
 		var status := ""
 		if game.phase == DeckhandGame.Phase.BUILD and pl.passed:
 			status = "  [color=#8a96a6](passed)[/color]"
+		elif _online and not _seats[p].bot and not _net.is_online(_seats[p].owner):
+			status = "  [color=#e8a0a0](away)[/color]"
 		elif game.pending.has(p):
 			status = "  [color=#8a96a6](thinking…)[/color]"
 		var template := "[b]%s[/b]%s\n[color=#ffd36b]{vp} VP[/color]   ·   hand %d   ·   %s" % [
@@ -1292,7 +1625,7 @@ func _render_opponents() -> void:
 			row.add_child(_card(id, OPP_CARD))
 
 func _render_crew() -> void:
-	var pl: Dictionary = game.players[HUMAN]
+	var pl: Dictionary = game.players[_seat]
 	_render_ledger()
 	_clear(_crew_columns)
 	if pl.crew.is_empty():
@@ -1405,8 +1738,8 @@ static func _crew_columns_needed(stacks: Array, depth: int) -> int:
 ## kind of icon once with its count.
 func _render_ledger() -> void:
 	var offset := Vector2(_ledger_vp.size.x / 2.0 - 40.0, _ledger_vp.size.y * 0.45)
-	var fresh := _show_gains(HUMAN, _ledger_vp, "[center][color=#ffd36b][font_size=%d][b]{vp}[/b][/font_size] VP[/color][/center]" % _fs(32), offset)
-	var banners := game.raised_banners(HUMAN)
+	var fresh := _show_gains(_seat, _ledger_vp, "[center][color=#ffd36b][font_size=%d][b]{vp}[/b][/font_size] VP[/color][/center]" % _fs(32), offset)
+	var banners := game.raised_banners(_seat)
 	var cells: Array[String] = []
 	for b in CardDB.BANNERS:
 		if banners[b] > 0:
@@ -1414,20 +1747,20 @@ func _render_ledger() -> void:
 			cells.append(_tip(_banner_tip(b), "%s %s" % [_banner(b, 21), count]))
 	var text := _ledger_section("Banners", cells, "none raised")
 	cells = []
-	for group: Array in _production_groups(HUMAN):
+	for group: Array in _production_groups(_seat):
 		cells.append(_tip(_slot_tip(group[0], group[1]), "%s %d" % [_slot_icons(group[0], 20), group[1]]))
 	text += _ledger_section("Produces", cells, "nothing yet")
-	cells = [_tip(SYMBOL_TIPS["fx-tentacle"], "%s %d" % [_img("fx-tentacle", 20), game.tentacles(HUMAN)])]
-	var compasses := game.symbol_count(HUMAN, "compasses")
+	cells = [_tip(SYMBOL_TIPS["fx-tentacle"], "%s %d" % [_img("fx-tentacle", 20), game.tentacles(_seat)])]
+	var compasses := game.symbol_count(_seat, "compasses")
 	for spec in [["battles", "fx-battle"], ["hooks", "fx-hook"]]:
-		var n := game.symbol_count(HUMAN, spec[0])
+		var n := game.symbol_count(_seat, spec[0])
 		if n > 0:
 			cells.append(_tip(SYMBOL_TIPS[spec[1]], "%s %d" % [_img(spec[1], 20), n]))
 	if compasses > 0:
-		cells.append(_tip(SYMBOL_TIPS["fx-compass"] + " %d left this draft." % game.compasses_available(HUMAN), "%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(HUMAN), compasses]))
+		cells.append(_tip(SYMBOL_TIPS["fx-compass"] + " %d left this draft." % game.compasses_available(_seat), "%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(_seat), compasses]))
 	text += _ledger_section("Symbols", cells, "")
-	if game.players[HUMAN].pending_battles > 0:
-		text += "[color=#ffb070]Battle pending ×%d[/color]" % game.players[HUMAN].pending_battles
+	if game.players[_seat].pending_battles > 0:
+		text += "[color=#ffb070]Battle pending ×%d[/color]" % game.players[_seat].pending_battles
 	_ledger_body.text = text
 
 func _ledger_section(title: String, cells: Array[String], empty: String) -> String:
@@ -1444,7 +1777,7 @@ func _ledger_section(title: String, cells: Array[String], empty: String) -> Stri
 
 ## Hand order: windfall first, then hand, then draft picks.
 func _hand_entries() -> Array:
-	var pl: Dictionary = game.players[HUMAN]
+	var pl: Dictionary = game.players[_seat]
 	var entries: Array = []
 	if pl.windfall >= 0:
 		entries.append({"id": pl.windfall, "windfall": true})
@@ -1462,7 +1795,7 @@ func _render_hand() -> void:
 	_clear(_hand_area)
 	_hand_views.clear()
 	_hovered_hand = null
-	var decision: Variant = game.pending.get(HUMAN)
+	var decision: Variant = game.pending.get(_seat)
 	var type: String = decision.type if decision != null else ""
 	for entry: Dictionary in _hand_entries():
 		var id: int = entry.id
@@ -1513,7 +1846,7 @@ func _render_hand() -> void:
 		_kb_hand = false
 
 func _is_free(id: int) -> bool:
-	return Payment.missing_after_crew(CardDB.get_card(id).cost, game.crew_production_slots(HUMAN)).is_empty()
+	return Payment.missing_after_crew(CardDB.get_card(id).cost, game.crew_production_slots(_seat)).is_empty()
 
 ## A fan hanging off the bottom of the window. The hovered card stands up
 ## whole, enlarged, and its neighbours make room.
@@ -1581,7 +1914,7 @@ func _set_buttons(specs: Array) -> void:
 	_queue_key_badges()
 
 func _render_action() -> void:
-	var decision: Variant = game.pending.get(HUMAN)
+	var decision: Variant = game.pending.get(_seat)
 	if game.phase == DeckhandGame.Phase.GAME_OVER:
 		_action_text.text = "[b]The voyage is over.[/b]"
 		_set_buttons([["Scores", _render_overlay], ["New game", _open_menu]])
@@ -1620,8 +1953,8 @@ func _render_build_action() -> void:
 		return
 	var card := CardDB.get_card(_build_card)
 	var cost: Array = card.cost
-	var crew_missing := Payment.missing_after_crew(cost, game.crew_production_slots(HUMAN))
-	var result := game.check_payment(HUMAN, _build_card, _pay, _pay_windfall)
+	var crew_missing := Payment.missing_after_crew(cost, game.crew_production_slots(_seat))
+	var result := game.check_payment(_seat, _build_card, _pay, _pay_windfall)
 	var cost_icons := ""
 	for token: String in cost:
 		cost_icons += _res(token, 22)
@@ -1714,13 +2047,13 @@ func _render_overlay() -> void:
 	if game.phase == DeckhandGame.Phase.GAME_OVER:
 		_render_game_over()
 		return
-	var decision: Variant = game.pending.get(HUMAN)
+	var decision: Variant = game.pending.get(_seat)
 	if decision == null or _hold_choices:
 		return
 	match decision.type:
 		"mulligan":
 			var cards := _show_overlay("First draft", "You may keep this draft hand, or discard it all and draw a new one (once, round 1 only).")
-			var draft: Array = game.players[HUMAN].draft_hand
+			var draft: Array = game.players[_seat].draft_hand
 			for id: int in draft:
 				_card_into(cards, id, _overlay_size(draft.size()))
 			_overlay_buttons([["Keep", func() -> void: _submit({"redraw": false}), true, true], ["Redraw all", func() -> void: _submit({"redraw": true})]])
@@ -1776,7 +2109,7 @@ func _card_into(parent: Control, id: int, card_size: Vector2 = OVERLAY_CARD) -> 
 	return view
 
 func _render_draft_overlay(decision: Dictionary) -> void:
-	var pl: Dictionary = game.players[HUMAN]
+	var pl: Dictionary = game.players[_seat]
 	var direction := "to your left ↻" if game.wind() == 1 else "to your right ↺"
 	var sub := "Pick one card to keep; the rest pass %s. Picked so far: %d." % [direction, pl.picks.size()]
 	if decision.must_discard:
@@ -1794,7 +2127,7 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 			view.set_caption("Discard")
 	var specs: Array = []
 	if decision.can_use_compass:
-		specs.append(["Use Compass (%d left)" % game.compasses_available(HUMAN), func() -> void: _submit({"use_compass": true})])
+		specs.append(["Use Compass (%d left)" % game.compasses_available(_seat), func() -> void: _submit({"use_compass": true})])
 	if decision.must_discard:
 		specs.append(["Confirm", func() -> void: _submit({"pick": pick, "discard": drop}), pick >= 0 and drop >= 0, true])
 	_overlay_buttons(specs)
@@ -1817,10 +2150,10 @@ func _on_draft_card(id: int, decision: Dictionary) -> void:
 
 func _render_game_over() -> void:
 	var winners := game.winners()
-	var headline := "Victory!" if winners.has(HUMAN) else "Defeat"
-	if winners.size() > 1 and winners.has(HUMAN):
+	var headline := "Victory!" if winners.has(_seat) else "Defeat"
+	if winners.size() > 1 and winners.has(_seat):
 		headline = "Shared victory"
-	_show_overlay(headline, "[center]Your rank: [b][color=#ffd36b]%s[/color][/b][/center]" % DeckhandGame.rank_for(game.score(HUMAN)))
+	_show_overlay(headline, "[center]Your rank: [b][color=#ffd36b]%s[/color][/b][/center]" % DeckhandGame.rank_for(game.score(_seat)))
 	# Score sheet: where each pirate's points come from.
 	var sheet := GridContainer.new()
 	sheet.columns = 6
@@ -2121,8 +2454,8 @@ func _claim_flight() -> Dictionary:
 func _animate_vanished(id: int, from: Dictionary, anchors: Dictionary) -> void:
 	var to := from.duplicate()
 	var holder := -1
-	for p in range(1, game.player_count()):
-		if game.players[p].hand.has(id) or game.players[p].draft_hand.has(id):
+	for p in range(game.player_count()):
+		if p != _seat and (game.players[p].hand.has(id) or game.players[p].draft_hand.has(id)):
 			holder = p
 	if game.discard_pile.has(id) and anchors.has("discard"):
 		to = anchors.discard.duplicate()
@@ -2150,8 +2483,10 @@ func _animate_vanished(id: int, from: Dictionary, anchors: Dictionary) -> void:
 
 ## Game moments -> sounds. Opponents' actions play a little quieter.
 func _on_game_event(kind: String, info: Dictionary) -> void:
-	var p: int = info.get("player", HUMAN)
-	var volume := 0.0 if p == HUMAN else -6.0
+	if _replaying:
+		return
+	var p: int = info.get("player", _seat)
+	var volume := 0.0 if p == _seat else -6.0
 	match kind:
 		"round_start":
 			_sfx.play("bell", -3.0)
@@ -2176,7 +2511,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"telescope":
 			_sfx.play("telescope", volume)
 		"hook":
-			_sfx.play("hook", 0.0 if HUMAN in [p, info.target] else -6.0)
+			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
 		"battle_announce":
 			_sfx.play("battle", volume - 10.0)
 		"battle":
@@ -2187,10 +2522,10 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"lost":
 			_sfx.play("reveal", -8.0)
 		"game_end":
-			_sfx.play("victory" if game.winners().has(HUMAN) else "defeat")
+			_sfx.play("victory" if game.winners().has(_seat) else "defeat")
 
 func _on_hand_clicked(view: CardView) -> void:
-	var decision: Variant = game.pending.get(HUMAN)
+	var decision: Variant = game.pending.get(_seat)
 	if decision == null:
 		return
 	_sfx.play("card_flip", -6.0)
@@ -2202,7 +2537,7 @@ func _on_hand_clicked(view: CardView) -> void:
 				if _build_card >= 0:
 					_pay_windfall = not _pay_windfall
 			elif _build_card < 0:
-				if game.players[HUMAN].hand.has(id):
+				if game.players[_seat].hand.has(id):
 					_build_card = id
 			elif id == _build_card:
 				_reset_input()
@@ -2215,10 +2550,10 @@ func _on_hand_clicked(view: CardView) -> void:
 				_selected_windfall = not _selected_windfall
 			elif _selected.has(id):
 				_selected.erase(id)
-			elif game.players[HUMAN].hand.has(id):
+			elif game.players[_seat].hand.has(id):
 				_selected.append(id)
 		"hook_give":
-			if not is_windfall and game.players[HUMAN].hand.has(id):
+			if not is_windfall and game.players[_seat].hand.has(id):
 				_submit({"card": id})
 			return
 		_:
@@ -2227,10 +2562,10 @@ func _on_hand_clicked(view: CardView) -> void:
 	_render_action()
 
 func _auto_pay() -> void:
-	var others: Array = game.players[HUMAN].hand.filter(func(id: int) -> bool: return id != _build_card)
-	var keep := func(id: int) -> float: return DeckhandBot.keep_value(game, HUMAN, id)
-	var windfall_value := INF if game.players[HUMAN].windfall < 0 else 1.0
-	var plan := Payment.plan(CardDB.get_card(_build_card).cost, game.crew_production_slots(HUMAN), others, keep, windfall_value)
+	var others: Array = game.players[_seat].hand.filter(func(id: int) -> bool: return id != _build_card)
+	var keep := func(id: int) -> float: return DeckhandBot.keep_value(game, _seat, id)
+	var windfall_value := INF if game.players[_seat].windfall < 0 else 1.0
+	var plan := Payment.plan(CardDB.get_card(_build_card).cost, game.crew_production_slots(_seat), others, keep, windfall_value)
 	if not plan.ok:
 		_flash("Not enough cards to pay for this one.")
 		return
@@ -2266,6 +2601,8 @@ func _input(event: InputEvent) -> void:
 	if key == KEY_ESCAPE:
 		if _credits.visible:
 			_credits.visible = false
+		elif _online_panel.visible:
+			_close_online()
 		elif _menu.visible and game != null:
 			_menu.visible = false
 		elif not _menu.visible:
@@ -2548,7 +2885,7 @@ func _describe(id: int) -> void:
 		for row: Array in effects:
 			_info_effect(row[0], row[1])
 
-	if game != null and card.kind == "supply" and not game.players[HUMAN].crew.has(id):
+	if game != null and card.kind == "supply" and not game.players[_seat].crew.has(id):
 		# What discarding it pays: a coin, or (revealed) one of its resources.
 		var options := [_res("cs", 16), _res("c", 16)]
 		for token in CardDB.production_tokens(id):

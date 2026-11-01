@@ -1,0 +1,13 @@
+{
+  // Deckhand online relay: one Durable Object per table.
+  "name": "deckhand-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "TABLES", "class_name": "Table" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table"] }],
+  // Serve the relay on a subdomain of tidale.org (the zone must be on this
+  // Cloudflare account). Remove to use the default *.workers.dev address.
+  "routes": [{ "pattern": "play.tidale.org", "custom_domain": true }]
+}

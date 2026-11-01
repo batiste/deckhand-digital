@@ -32,6 +32,9 @@ const RANKS := [
 enum Phase { SETUP, DRAFT, BUILD, ROUND_END, GAME_OVER }
 
 var rng := RandomNumberGenerator.new()
+## For bots' choices only, so working out a bot's move never changes the game's
+## own random sequence (online, only one player's machine plays the bots).
+var bot_rng := RandomNumberGenerator.new()
 var options := {
 	"beginner_draft": false, # 7 cards in the first draft
 	"solo_variant": false,   # virtual opponents: random picks, free random builds, no hooks
@@ -215,6 +218,14 @@ static func rank_for(points: int) -> String:
 func check_payment(p: int, card_id: int, discards: Array, use_windfall: bool) -> Dictionary:
 	return Payment.evaluate(CardDB.get_card(card_id).cost, crew_production_slots(p), discards, use_windfall)
 
+## A fingerprint of the whole game state: equal on every machine that applied
+## the same actions to the same seed (online play compares them).
+func checksum() -> int:
+	var state := [rng.state, round_index, phase, build_step, supply, discard_pile, infamy_deck, removed, row, pending.keys(), _queue]
+	for p in players:
+		state.append([p.hand, p.windfall, p.crew, p.passed, p.draft_hand, p.picks, p.compasses_used, p.pending_battles])
+	return hash(var_to_str(state))
+
 ## Players from `candidates` in priority order: most tentacles first
 ## (random among ties), then around the table in the wind direction.
 func priority_order(candidates: Array) -> Array[int]:
@@ -239,6 +250,14 @@ func priority_order(candidates: Array) -> Array[int]:
 	return out
 
 # --- Decisions --------------------------------------------------------------
+
+## Why `action` would be rejected for player `p`, or "" if it is valid.
+## Changes nothing (online play checks a move before sending it).
+func validate(p: int, action: Dictionary) -> String:
+	if not pending.has(p):
+		return "No decision pending for this player"
+	var decision: Dictionary = pending[p]
+	return call("_validate_" + decision.type, p, decision, action)
 
 ## Returns "" on success, otherwise why the action was rejected.
 func submit(p: int, action: Dictionary) -> String:

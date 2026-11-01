@@ -38,6 +38,47 @@ Every button shows its key in a small badge on its corner.
 
 Volumes are set in the menu and saved between sessions.
 
+## Online play
+
+**Play online** in the menu creates a table (you get a 5-letter code to share)
+or joins one. The host picks how many bots fill the empty seats, and starts.
+
+The game runs in lockstep on every player's machine: the server is a small
+relay in [server/](server/) (a Cloudflare Worker, one Durable Object per
+table). It knows nothing of the rules. It picks the seed and passes every
+move to every player in the same order. The host's machine plays the bots,
+and any player who has been away for 15 seconds. A player who drops out
+rejoins their seat automatically, and catches up from the moves so far.
+
+### Run the relay locally
+
+```sh
+cd server
+npm install
+npm run dev            # relay on http://localhost:8787
+npm test               # relay tests (with the dev relay running)
+```
+
+Point the game at it with `--relay`:
+
+```sh
+godot --path . -- --relay=http://localhost:8787
+godot --headless --path . -s res://tests/test_online.gd -- --relay=http://localhost:8787
+```
+
+### Deploy
+
+```sh
+cd server
+npx wrangler login     # once
+npm run deploy
+```
+
+[server/wrangler.jsonc](server/wrangler.jsonc) serves it on `play.tidale.org`
+(the tidale.org zone must be on the same Cloudflare account); the game connects
+there by default (`NetClient.DEFAULT_URL`). On the free plan, idle tables cost
+nothing; a table untouched for 7 days is deleted.
+
 ## Tests
 
 Both run headless and play full games:
@@ -78,7 +119,7 @@ python3 tools/make_sfx.py   # synthesizes assets/sfx/*.wav
 
 ## Credits
 
-- **Publisher:** [Tidale](https://tidale.org/deckhand/)
+- **Publisher:** [Tidale](https://tidale.org/deckhand-race-for-infamy/)
 - **Game design:** Batiste Bieler
 - **Illustrations:** Vitor Henrique, Ricardo Zopello, Batiste Bieler, Mauri, Toloma, Daniel Cunha, Marvin Blattert, Matias Gonzalez
 - **Iconography:** Louise Fayt, Batiste Bieler

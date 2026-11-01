@@ -37,7 +37,7 @@ static func decide(game: DeckhandGame, p: int) -> Dictionary:
 	return {}
 
 static func _decide_random(game: DeckhandGame, p: int, decision: Dictionary) -> Dictionary:
-	var rng := game.rng
+	var rng := game.bot_rng
 	var pl: Dictionary = game.players[p]
 	match decision.type:
 		"draft_pick":
@@ -49,7 +49,11 @@ static func _decide_random(game: DeckhandGame, p: int, decision: Dictionary) -> 
 			return out
 		"hand_limit":
 			var cards: Array = pl.hand.duplicate()
-			game._shuffle(cards)
+			for i in range(cards.size() - 1, 0, -1):
+				var j := rng.randi_range(0, i)
+				var tmp: int = cards[i]
+				cards[i] = cards[j]
+				cards[j] = tmp
 			var discards := cards.slice(0, decision.count)
 			var out := {"discards": discards}
 			if discards.size() < decision.count:

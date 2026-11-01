@@ -9,6 +9,7 @@ func _init() -> void:
 	test_card_data()
 	test_payment()
 	test_full_games()
+	test_lockstep()
 	print("\n%s" % ("ALL TESTS PASSED" if failures == 0 else "%d FAILURE(S)" % failures))
 	quit(1 if failures > 0 else 0)
 
@@ -82,6 +83,40 @@ func test_full_games() -> void:
 			print("seed %d scores: %s" % [seed_value, game.final_scores])
 	print("simulated %d games, avg score %.1f, best %d, %d infamy claims" % [
 		stats.games, float(stats.total_score) / (stats.games * 3.0), stats.max_score, stats.claims])
+
+## Online play: every machine applies the same actions to the same seed, and
+## only one of them works out the bots' moves. Replaying a game's actions on
+## a second copy must give the same game, step for step.
+func test_lockstep() -> void:
+	for seed_value in range(12):
+		var n := 2 + seed_value % 4
+		var solo := seed_value % 6 == 5
+		var seats: Array = []
+		for i in range(n if not solo else 2):
+			seats.append({"name": "P%d" % i, "bot": true, "virtual": solo and i == 1})
+		var options := {"solo_variant": solo, "beginner_draft": seed_value % 3 == 0}
+		var host := DeckhandGame.new()
+		var peer := DeckhandGame.new()
+		host.setup(seats, 1000 + seed_value, options)
+		peer.setup(seats, 1000 + seed_value, options)
+		# Bots' own randomness differs between machines; it must not matter.
+		host.bot_rng.seed = seed_value
+		peer.bot_rng.seed = 999
+		host.start()
+		peer.start()
+		var steps := 0
+		var in_step := true
+		while host.phase != DeckhandGame.Phase.GAME_OVER and steps < 5000:
+			steps += 1
+			var p: int = host.pending.keys()[0]
+			var action := DeckhandBot.decide(host, p)
+			host.submit(p, action)
+			peer.submit(p, action)
+			if host.checksum() != peer.checksum():
+				in_step = false
+				break
+		check(in_step, "seed %d: lockstep copies diverged at action %d" % [seed_value, steps])
+		check(peer.phase == DeckhandGame.Phase.GAME_OVER and host.final_scores == peer.final_scores, "seed %d: lockstep copies end the same" % seed_value)
 
 func check_conservation(game: DeckhandGame, seed_value: int) -> void:
 	var seen := {}
