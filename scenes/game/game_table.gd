@@ -41,11 +41,6 @@ const PARCHMENT := "res://assets/ui/parchment.jpg"
 const LOGO := "res://assets/new-logo.png"
 const PUBLISHER_LOGO := "res://assets/tidale-logo.png"
 const PUBLISHER_URL := "https://tidale.org/deckhand-race-for-infamy/"
-## Music tracks. Each pass crossfades into the next over `crossfade`
-## seconds (the intro ends at full volume); the gameplay track sits low,
-## under the sound effects.
-const INTRO_MUSIC := {"path": "res://assets/intro.mp3", "db": -4.0, "crossfade": 4.0}
-const GAME_MUSIC := {"path": "res://assets/gameplay.mp3", "db": -13.0, "crossfade": 3.0}
 ## Title screen paintings, shown in turn.
 const MENU_ART: Array[String] = [
 	"res://assets/art/kraken.jpg",
@@ -138,10 +133,7 @@ var _zoom_panel: PanelContainer
 var _zoom_card: CardView
 var _zoom_info: VBoxContainer # the card's rules, under its picture
 var _sfx: Sfx
-var _music: AudioStreamPlayer # the pass playing now
-var _music_next: AudioStreamPlayer # the other one, for the crossfade
-var _music_track := {} # the track looping now (INTRO_MUSIC...), empty when silent
-var _music_pass := 0
+var _music: Music
 var _curtain: ColorRect # black, for fading into a new game
 var _slides: Array[TextureRect] = [] # two layers for crossfading the title art
 
@@ -182,12 +174,8 @@ func _ready() -> void:
 	_net.disconnected.connect(func() -> void:
 		if _online:
 			_flash("Connection lost: reconnecting…"))
-	_music = AudioStreamPlayer.new()
-	_music.bus = "Music"
+	_music = Music.new()
 	add_child(_music)
-	_music_next = AudioStreamPlayer.new()
-	_music_next.bus = "Music"
-	add_child(_music_next)
 	_build_ui()
 	_motion = CardMotion.new()
 	_motion.layer = 5
@@ -234,7 +222,7 @@ func _new_game() -> void:
 
 func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_menu.visible = false
-	_play_music(GAME_MUSIC, 2.0)
+	_music.play(Music.GAME, 2.0)
 	# The first deal, reveal and bot moves happen at once: keep them quiet.
 	_sfx.hush(2.5)
 	game = DeckhandGame.new()
@@ -1062,7 +1050,7 @@ func _intro() -> void:
 	logo.modulate.a = 0.0
 	panel.modulate.a = 0.0
 	var tween := create_tween()
-	_play_music(INTRO_MUSIC, 1.5)
+	_music.play(Music.INTRO, 1.5)
 	tween.tween_property(_menu, "modulate", Color.WHITE, 1.0)
 	tween.parallel().tween_property(logo, "modulate:a", 1.0, 0.4)
 	tween.parallel().tween_property(logo, "scale", Vector2.ONE, 0.8).from(Vector2(1.5, 1.5)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
@@ -1095,58 +1083,6 @@ func _show_slide(index: int) -> void:
 		to.x = -overflow.x
 	tween.parallel().tween_property(art, "position", to, SLIDE_TIME + SLIDE_FADE).from(from).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tween.parallel().tween_callback(_show_slide.bind((index + 1) % MENU_ART.size())).set_delay(SLIDE_TIME)
-
-## Switches to looping `track`, crossfading from whatever plays now.
-func _play_music(track: Dictionary, fade_in: float) -> void:
-	if track == _music_track:
-		return
-	_music_track = track
-	_play_music_pass(fade_in)
-
-## Starts a pass of the current track on the spare player, fading it in over
-## `fade_in` seconds while the other fades out, and schedules the next pass
-## for the last seconds of this one.
-func _play_music_pass(fade_in: float) -> void:
-	if _music_track.is_empty():
-		return
-	_music_pass += 1
-	var this_pass := _music_pass
-	var old := _music
-	_music = _music_next
-	_music_next = old
-	_fade_out(old, fade_in)
-	var track := _music_track
-	_music.stream = load(track.path)
-	_music.volume_db = -40.0
-	_music.play()
-	_fade_tween(_music).tween_property(_music, "volume_db", track.db, fade_in).set_trans(Tween.TRANS_SINE)
-	var length := _music.stream.get_length()
-	get_tree().create_timer(length - track.crossfade).timeout.connect(func() -> void:
-		if this_pass == _music_pass:
-			_play_music_pass(track.crossfade))
-
-func _fade_out(player: AudioStreamPlayer, seconds: float) -> void:
-	if not player.playing:
-		return
-	var fade := _fade_tween(player)
-	fade.tween_property(player, "volume_db", -40.0, seconds).set_trans(Tween.TRANS_SINE)
-	fade.tween_callback(player.stop)
-
-## A new volume tween for `player`, replacing one still running (whose
-## stop at the end would cut the new music).
-func _fade_tween(player: AudioStreamPlayer) -> Tween:
-	if player.has_meta("fade"):
-		(player.get_meta("fade") as Tween).kill()
-	var tween := player.create_tween()
-	player.set_meta("fade", tween)
-	return tween
-
-## Silences the music.
-func _fade_music() -> void:
-	_music_track = {}
-	_music_pass += 1
-	_fade_out(_music, 1.2)
-	_fade_out(_music_next, 1.2)
 
 ## A dark radial vignette over the table and the menu.
 static func _vignette(strength: float = 0.85) -> TextureRect:
