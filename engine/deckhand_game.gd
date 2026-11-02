@@ -268,7 +268,10 @@ func submit(p: int, action: Dictionary) -> String:
 	if not error.is_empty():
 		return error
 	pending.erase(p)
-	if decision.get("group", false):
+	if decision.type == "draft_pick" and action.get("redraw", false):
+		# Nobody waits on a mulligan: it is played at once.
+		_redraw_draft(p)
+	elif decision.get("group", false):
 		_answers[p] = action
 	else:
 		call("_answer_" + decision.type, p, decision, action)
@@ -432,29 +435,21 @@ func _task_draft_begin(_task: Dictionary) -> void:
 			p.draft_hand.append(_draw_supply())
 	_log("Draft: each pirate draws %d cards." % size)
 	event.emit("deal", {})
-	if round_index == 1:
-		for p in range(players.size()):
-			_ask(p, {"type": "mulligan", "group": true})
-		_push_front([{"type": "mulligan_resolve"}, {"type": "draft_step"}])
-	else:
-		_push_front([{"type": "draft_step"}])
+	_push_front([{"type": "draft_step"}])
 
-func _validate_mulligan(_p: int, _decision: Dictionary, _action: Dictionary) -> String:
-	return ""
-
-func _task_mulligan_resolve(_task: Dictionary) -> void:
-	for p in _answers:
-		if _answers[p].get("redraw", false):
-			var size: int = players[p].draft_hand.size()
-			discard_pile.append_array(players[p].draft_hand)
-			players[p].draft_hand.clear()
-			for _i in range(size):
-				var id := _draw_supply()
-				if id >= 0:
-					players[p].draft_hand.append(id)
-			_log("%s redraws their draft hand." % _name(p))
-			event.emit("deal", {"player": p})
-	_answers.clear()
+## The round 1 mulligan, offered with the first pick: discard the whole
+## draft hand, draw as many new cards, and pick from those.
+func _redraw_draft(p: int) -> void:
+	var size: int = players[p].draft_hand.size()
+	discard_pile.append_array(players[p].draft_hand)
+	players[p].draft_hand.clear()
+	for _i in range(size):
+		var id := _draw_supply()
+		if id >= 0:
+			players[p].draft_hand.append(id)
+	_log("%s redraws their draft hand." % _name(p))
+	event.emit("deal", {"player": p})
+	_ask_draft_pick(p, false)
 
 func compasses_available(p: int) -> int:
 	return symbol_count(p, "compasses") - players[p].compasses_used
@@ -467,20 +462,23 @@ func _task_draft_step(_task: Dictionary) -> void:
 		_log("Draft complete.")
 		return
 	for p in range(players.size()):
-		_ask_draft_pick(p, false)
+		_ask_draft_pick(p, false, round_index == 1 and players[p].picks.is_empty())
 	_push_front([{"type": "draft_resolve"}])
 
-func _ask_draft_pick(p: int, must_discard: bool) -> void:
+func _ask_draft_pick(p: int, must_discard: bool, can_redraw: bool = false) -> void:
 	var cards_left := supply.size() + discard_pile.size()
 	_ask(p, {
 		"type": "draft_pick",
 		"group": true,
 		"must_discard": must_discard,
+		"can_redraw": can_redraw,
 		"can_use_compass": not must_discard and compasses_available(p) > 0 and cards_left > 0,
 	})
 
 func _validate_draft_pick(p: int, decision: Dictionary, action: Dictionary) -> String:
 	var hand: Array = players[p].draft_hand
+	if action.get("redraw", false):
+		return "" if decision.can_redraw else "You can only redraw before your first pick"
 	if action.get("use_compass", false):
 		return "" if decision.can_use_compass else "No Compass available"
 	if not hand.has(action.get("pick", -1)):

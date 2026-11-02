@@ -93,7 +93,7 @@ godot --headless --path . -s res://tests/test_ui.gd
 
 ## Build a release
 
-All three builds are made from any computer with Godot 4.7. The first time,
+All four builds are made from any computer with Godot 4.7. The first time,
 Godot asks you to download the **export templates** for your Godot version (Editor →
 Manage Export Templates → Download and Install), which cover every platform.
 
@@ -102,10 +102,14 @@ from a terminal (`godot` being your Godot binary, e.g.
 `/Applications/Godot.app/Contents/MacOS/Godot` on a Mac):
 
 ```sh
+mkdir -p ~/Downloads/Deckhand-Windows ~/Downloads/Deckhand-Linux ~/Downloads/Deckhand-Web
 godot --headless --path . --export-release "macOS"   ~/Downloads/Deckhand.dmg
 godot --headless --path . --export-release "Windows" ~/Downloads/Deckhand-Windows/Deckhand.exe
 godot --headless --path . --export-release "Linux"   ~/Downloads/Deckhand-Linux/Deckhand.x86_64
+godot --headless --path . --export-release "Web"     ~/Downloads/Deckhand-Web/index.html
 ```
+
+Godot doesn't create the target folders, hence the `mkdir`.
 
 The presets are in `export_presets.cfg`. They leave out the relay server,
 the tests and the docs, and store the card art as WebP (one copy, small).
@@ -115,8 +119,16 @@ the tests and the docs, and store the card art as WebP (one copy, small).
 | macOS | `Deckhand.dmg` with a universal app (Apple Silicon and Intel) | ~100 MB | Unsigned: right-click the app → **Open**, or System Settings → Privacy & Security → **Open Anyway** |
 | Windows | `Deckhand.exe`, a single file (64-bit) | ~70 MB | SmartScreen may warn: **More info → Run anyway** |
 | Linux | `Deckhand.x86_64`, a single file (64-bit) | ~64 MB | `chmod +x Deckhand.x86_64`, then run it |
+| Web | `index.html` with its `.js`, `.wasm` and `.pck` files | ~50 MB | Must be served over HTTP, not opened from disk; sound starts after the first click |
 
-Zip the Windows and Linux folders to share them. Notes:
+Zip the Windows, Linux and Web folders to share them. Notes:
+
+- **Web**: upload the `Deckhand-Web` folder to any static host (itch.io with
+  "played in the browser", Cloudflare Pages, GitHub Pages). Thread support is
+  off in the preset, so no special server headers are needed. To try it
+  locally: `cd ~/Downloads/Deckhand-Web && python3 -m http.server 8000`, then
+  open http://localhost:8000. The `--relay=` option doesn't apply in a browser,
+  so the web build always uses the default relay.
 
 - **Windows icon**: the `.exe` keeps Godot's icon unless Godot can edit it,
   which needs [rcedit](https://github.com/electron/rcedit/releases): set its

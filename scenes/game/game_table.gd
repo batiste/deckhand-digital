@@ -23,9 +23,9 @@ const CREW_MAX_COLUMNS := 6
 const RESOURCE_ORDER: Array[String] = ["g", "p", "r", "h", "s", "e", "cs", "c"]
 const OPP_CARD := Vector2(50, 68)
 const OPP_COLUMN_WIDTH := 340.0
-const OVERLAY_CARD := Vector2(180, 245)
+const OVERLAY_CARD := Vector2(165, 225) # leaves even gaps around the choice
 const OVERLAY_CARD_SMALL := Vector2(135, 184)
-const LEDGER_WIDTH := 196.0
+const LEDGER_WIDTH := 216.0
 ## How much of the hand shows above the bottom edge; hovered cards rise fully.
 const HAND_VISIBLE := 170.0
 const HAND_FOCUS_SCALE := 1.4
@@ -113,6 +113,9 @@ var _piles_box: HBoxContainer
 var _opponents_box: VBoxContainer
 var _crew_columns: HBoxContainer
 var _crew_panel: PanelContainer
+var _crew_hint: Label
+var _board: Control # the Infamy Row and the decks
+var _action_bar: Control
 var _pay_panel: PanelContainer # paying for a build: floats over the crew
 var _pay_body: VBoxContainer
 var _ledger_vp: RichTextLabel
@@ -147,6 +150,7 @@ var _pile_views := {} # "supply" / "infamy" / "discard" -> CardView
 var _opp_panels := {} # player -> PanelContainer
 var _refresh_queued := false
 var _unplayed := {} # snapshot whose animation has not started yet
+var _hands_passed := false # the next draft hand slides in from a neighbour
 var _title_layer: CanvasLayer # the round title on show, if any
 var _finale: CanvasLayer # the end-of-game screen, built once per game
 var _hold_choices := false # the round title is up: choices wait for it
@@ -293,6 +297,24 @@ func _submit(action: Dictionary) -> void:
 		return
 	_sent[_seat] = decision
 	_net.send_action(_seat, action)
+	# Dim the choice at once while the relay answers.
+	_queue_refresh()
+
+## Whether this machine has sent the pending choice and awaits the relay.
+func _choice_sent() -> bool:
+	return _online and _sent.has(_seat) and is_same(_sent[_seat], game.pending.get(_seat))
+
+## The other pirates still making a simultaneous choice (a draft pick)
+## after yours is made, or [] when there is nothing to wait for in a dialog.
+## Offline the bots answer within a frame, so there is no dialog to show.
+func _waiting_on() -> Array:
+	if not _online or game.pending.has(_seat):
+		return []
+	var out := []
+	for p: int in game.pending:
+		if game.pending[p].type == "draft_pick":
+			out.append(p)
+	return out
 
 ## The seats this machine plays for the bots: all but yours offline; online,
 ## on the host's machine, the bots and players who have been away a while.
@@ -432,12 +454,12 @@ func _build_ui() -> void:
 	var board := HBoxContainer.new()
 	board.add_theme_constant_override("separation", 12)
 	main.add_child(board)
+	_board = board
 	var row_panel := _panel()
 	row_panel.size_flags_horizontal = SIZE_EXPAND_FILL
 	board.add_child(row_panel)
 	var row_v := VBoxContainer.new()
 	row_panel.add_child(row_v)
-	row_v.add_child(_label("Infamy Row — claim a card when your raised banners match its requirement", 14, MUTED))
 	_row_box = HBoxContainer.new()
 	_row_box.add_theme_constant_override("separation", 16)
 	row_v.add_child(_row_box)
@@ -485,6 +507,12 @@ func _build_ui() -> void:
 	crew_title.size_flags_horizontal = SIZE_FILL
 	crew_title.size_flags_vertical = SIZE_FILL
 	crew_panel.add_child(crew_title)
+	# Until the first card is built: what the panel is for.
+	_crew_hint = _label("Built cards join your crew here.\nTheir production pays for later builds.", 22, Color(1, 0.93, 0.8, 0.28))
+	_crew_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_crew_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_crew_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	crew_panel.add_child(_crew_hint)
 	var crew_v := VBoxContainer.new()
 	crew_panel.add_child(crew_v)
 	var crew_scroll := ScrollContainer.new()
@@ -508,6 +536,7 @@ func _build_ui() -> void:
 	action_style.content_margin_top = 10
 	action_style.content_margin_bottom = 10
 	main.add_child(action_panel)
+	_action_bar = action_panel
 	var action_h := HBoxContainer.new()
 	action_h.add_theme_constant_override("separation", 12)
 	action_panel.add_child(action_h)
@@ -555,24 +584,35 @@ func _build_overlay() -> void:
 	_overlay.mouse_filter = MOUSE_FILTER_IGNORE
 	_overlay.visible = false
 	add_child(_overlay)
-	var center := CenterContainer.new()
-	center.set_anchors_preset(PRESET_FULL_RECT)
-	center.mouse_filter = MOUSE_FILTER_IGNORE
-	# Leave the hand and action bar visible below the overlay.
-	center.offset_bottom = -(HAND_VISIBLE + 84)
-	# Centred on the window, with the ledger's width kept clear on both sides.
-	center.offset_left = LEDGER_WIDTH + 24
-	center.offset_right = -(LEDGER_WIDTH + 24)
-	_overlay.add_child(center)
 	# Lighter wood and a bright rim, so the choice stands out from the table.
 	var panel := _wood_panel(Color(0.68, 0.5, 0.32), true)
 	(panel.material as ShaderMaterial).set_shader_parameter("rim_color", Color(1.0, 0.82, 0.45, 0.95))
 	(panel.material as ShaderMaterial).set_shader_parameter("rim_width", 3.0)
 	panel.mouse_filter = MOUSE_FILTER_STOP
-	center.add_child(panel)
+	_overlay.add_child(panel)
 	_overlay_body = VBoxContainer.new()
 	_overlay_body.add_theme_constant_override("separation", 12)
 	panel.add_child(_overlay_body)
+	_overlay.set_meta("panel", panel)
+	panel.resized.connect(_place_overlay)
+	# Outside a container nothing shrinks it back when its content shrinks.
+	panel.minimum_size_changed.connect(_place_overlay, CONNECT_DEFERRED)
+	_crew_panel.resized.connect(_place_overlay)
+	_action_bar.resized.connect(_place_overlay)
+
+## Over your crew, leaving the Infamy Row clear: centred across the crew
+## panel, and with even gaps between the Row and the action bar. Taller than
+## that space, it stands just above the action bar.
+func _place_overlay() -> void:
+	var panel: Control = _overlay.get_meta("panel")
+	panel.reset_size()
+	var crew := _crew_panel.get_global_rect()
+	var screen := get_viewport_rect().size
+	var x := clampf(crew.get_center().x - panel.size.x / 2.0, 12.0, screen.x - panel.size.x - 12.0)
+	var top := _board.get_global_rect().end.y
+	var bottom := _action_bar.get_global_rect().position.y
+	var y := minf((top + bottom - panel.size.y) / 2.0, bottom - 6.0 - panel.size.y)
+	panel.global_position = Vector2(x, maxf(y, 12.0))
 
 func _build_menu() -> void:
 	# Its own layer, above the cards (which use z_index), the flying cards
@@ -664,18 +704,29 @@ func _build_menu() -> void:
 
 	# With other people.
 	v.add_child(_menu_heading("With friends"))
-	v.add_child(_big(_tint(_button("Play online", _show_online), Color(0.12, 0.27, 0.38), Color(0.5, 0.75, 0.9))))
+	var online := _big(_tint(_button("Play online", _show_online), Color(0.12, 0.27, 0.38), Color(0.5, 0.75, 0.9)))
+	v.add_child(online)
 
 	# Everything else, quietly.
 	var footer := HBoxContainer.new()
 	footer.alignment = BoxContainer.ALIGNMENT_CENTER
 	footer.add_theme_constant_override("separation", 6)
 	v.add_child(footer)
-	footer.add_child(_quiet(_button("Settings", _show_settings)))
+	var down: Array[Control] = [online]
+	down.append(_quiet(_button("Settings", _show_settings)))
+	footer.add_child(down[-1])
 	footer.add_child(_label("·", 15, MUTED))
-	footer.add_child(_quiet(_button("Credits", _show_credits)))
-	footer.add_child(_label("·", 15, MUTED))
-	footer.add_child(_quiet(_button("Quit", func() -> void: get_tree().quit())))
+	down.append(_quiet(_button("Credits", _show_credits)))
+	footer.add_child(down[-1])
+	# A browser tab has nothing to quit to: quitting just freezes the page.
+	if not OS.has_feature("web"):
+		footer.add_child(_label("·", 15, MUTED))
+		down.append(_quiet(_button("Quit", func() -> void: get_tree().quit())))
+		footer.add_child(down[-1])
+	# Down from the last big button walks the footer, one by one.
+	for i in range(1, down.size()):
+		down[i - 1].focus_neighbor_bottom = down[i - 1].get_path_to(down[i])
+		down[i].focus_neighbor_top = down[i].get_path_to(down[i - 1])
 	_menu.set_meta("new_game", new_game)
 	_menu.set_meta("opponents", opp)
 	_menu.set_meta("resume", resume)
@@ -684,6 +735,8 @@ func _build_menu() -> void:
 	_build_settings()
 	_menu.set_meta("logo", logo)
 	_menu.set_meta("panel", panel)
+	# The menu and the table take turns at the button keys.
+	_menu.visibility_changed.connect(_queue_key_badges)
 
 ## Who made the game, from the rulebook's credits page.
 const CREDITS := [
@@ -755,6 +808,7 @@ func _build_settings() -> void:
 	mixer.add_theme_constant_override("h_separation", 16)
 	mixer.add_theme_constant_override("v_separation", 10)
 	v.add_child(mixer)
+	var first: HSlider = null
 	for spec in [["Master", "Volume"], ["Music", "Music"], ["Effects", "Sound effects"]]:
 		var bus: String = spec[0]
 		mixer.add_child(_label(spec[1], 17))
@@ -765,18 +819,37 @@ func _build_settings() -> void:
 		slider.value = _sfx.volumes[bus]
 		slider.size_flags_horizontal = SIZE_EXPAND_FILL
 		slider.size_flags_vertical = SIZE_SHRINK_CENTER
-		slider.value_changed.connect(func(level: float) -> void: _sfx.set_volume(bus, level))
-		slider.drag_ended.connect(func(_changed: bool) -> void:
+		var settled := func() -> void:
 			_sfx.save_volumes()
 			if bus != "Music":
-				_sfx.play("coin"))
+				_sfx.play("coin")
+		var dragging := [false]
+		slider.drag_started.connect(func() -> void: dragging[0] = true)
+		slider.value_changed.connect(func(level: float) -> void:
+			_sfx.set_volume(bus, level)
+			if not dragging[0]:
+				settled.call()) # a step with the arrow keys
+		slider.drag_ended.connect(func(_changed: bool) -> void:
+			dragging[0] = false
+			settled.call())
 		mixer.add_child(slider)
+		if first == null:
+			first = slider
 	var close := _button("Close", func() -> void: _settings.visible = false)
 	close.size_flags_horizontal = SIZE_SHRINK_CENTER
 	v.add_child(close)
+	_settings.set_meta("first", first)
+	# Closed, focus goes back to where it was (the Settings button).
+	_settings.visibility_changed.connect(func() -> void:
+		var back: Variant = _settings.get_meta("back", null)
+		if not _settings.visible and back is Control and is_instance_valid(back) and back.is_visible_in_tree():
+			back.grab_focus())
 
 func _show_settings() -> void:
+	_settings.set_meta("back", get_viewport().gui_get_focus_owner())
 	_settings.visible = true
+	# Arrows: Up / Down between the sliders and Close, Left / Right to set.
+	(_settings.get_meta("first") as Control).grab_focus()
 	_settings.modulate.a = 0.0
 	_settings.create_tween().tween_property(_settings, "modulate:a", 1.0, 0.2)
 
@@ -1039,10 +1112,12 @@ func _open_menu() -> void:
 	var new_game: Button = _menu.get_meta("new_game")
 	for state in ["normal", "hover", "pressed"]:
 		new_game.remove_theme_stylebox_override(state)
+	new_game.remove_meta("primary")
 	if not in_game:
 		_primary(new_game)
 	_hide_zoom(true)
 	_menu.visible = true
+	_queue_key_badges()
 
 ## First appearance of the title menu: fades in from the boot screen's dark
 ## with the intro music, the logo drops in, then the options.
@@ -1180,8 +1255,9 @@ func _make_theme() -> Theme:
 	plain.content_margin_left = 2
 	plain.content_margin_top = 4
 	plain.content_margin_bottom = 4
-	for state in ["normal", "hover", "pressed", "hover_pressed", "disabled", "focus"]:
+	for state in ["normal", "hover", "pressed", "hover_pressed", "disabled"]:
 		t.set_stylebox(state, "CheckBox", plain)
+	t.set_stylebox("focus", "CheckBox", focus)
 	t.set_constant("h_separation", "CheckBox", 12)
 	t.set_icon("unchecked", "CheckBox", _check_icon(false))
 	t.set_icon("checked", "CheckBox", _check_icon(true))
@@ -1217,6 +1293,7 @@ func _make_theme() -> Theme:
 	t.set_color("font_color", "TooltipLabel", INK)
 	t.set_font_size("font_size", "TooltipLabel", _fs(15))
 	t.set_stylebox("slider", "HSlider", track)
+	t.set_stylebox("focus", "HSlider", focus)
 	t.set_stylebox("grabber_area", "HSlider", filled)
 	t.set_stylebox("grabber_area_highlight", "HSlider", filled_hover)
 	return t
@@ -1372,9 +1449,27 @@ func _quiet(button: Button) -> Button:
 	button.add_theme_stylebox_override("normal", plain)
 	button.add_theme_stylebox_override("hover", hover)
 	button.add_theme_stylebox_override("pressed", hover)
-	button.add_theme_color_override("font_color", Color(0.93, 0.83, 0.65))
-	button.add_theme_color_override("font_hover_color", GOLD)
+	# Its key is its first letter, in bold (no key cap): the text is drawn by
+	# two labels over the button's own, now invisible, text.
 	button.add_theme_font_size_override("font_size", _fs(15))
+	for state in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_hover_pressed_color"]:
+		button.add_theme_color_override(state, Color(0, 0, 0, 0))
+	button.set_meta("key", OS.find_keycode_from_string(button.text.left(1).to_upper()))
+	button.set_meta("plain_key", true)
+	var row := HBoxContainer.new()
+	row.set_anchors_preset(PRESET_FULL_RECT)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 0)
+	row.mouse_filter = MOUSE_FILTER_IGNORE
+	button.add_child(row)
+	row.add_child(_label(button.text.left(1), 15, Color.WHITE, true))
+	row.add_child(_label(button.text.substr(1), 15, Color.WHITE))
+	var tint := func(lit: bool) -> void: row.modulate = GOLD if lit else Color(0.93, 0.83, 0.65)
+	tint.call(false)
+	button.mouse_entered.connect(tint.bind(true))
+	button.mouse_exited.connect(func() -> void: tint.call(button.has_focus()))
+	button.focus_entered.connect(tint.bind(true))
+	button.focus_exited.connect(func() -> void: tint.call(button.is_hovered()))
 	return button
 
 func _card(id: int, card_size: Vector2, face_up: bool = true) -> CardView:
@@ -1456,7 +1551,7 @@ func _render_top() -> void:
 		DeckhandGame.Phase.ROUND_END: "End of round",
 		DeckhandGame.Phase.GAME_OVER: "Final scores",
 	}
-	var wind := "clockwise ↻" if game.wind() == 1 else "counter-clockwise ↺"
+	var wind := "clockwise" if game.wind() == 1 else "counter-clockwise"
 	_phase_label.text = "%s    ·    wind %s" % [phase_names[game.phase], wind]
 
 func _render_row() -> void:
@@ -1467,9 +1562,6 @@ func _render_row() -> void:
 		v.add_theme_constant_override("separation", 2)
 		v.size_flags_horizontal = SIZE_EXPAND_FILL
 		_row_box.add_child(v)
-		var title := _label("Round %d" % (i + 1), 13, GOLD if i + 1 == game.round_index else MUTED)
-		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		v.add_child(title)
 		if slot.cards.is_empty():
 			var empty := Panel.new()
 			empty.custom_minimum_size = ROW_CARD
@@ -1667,8 +1759,8 @@ func _render_crew() -> void:
 	var pl: Dictionary = game.players[_seat]
 	_render_ledger()
 	_clear(_crew_columns)
+	_crew_hint.visible = pl.crew.is_empty()
 	if pl.crew.is_empty():
-		_crew_columns.add_child(_label("Built cards join your crew here. Their production pays for later builds.", 15, MUTED))
 		return
 	# Grouped by what the cards produce, each group under a small heading.
 	# A deep group continues in a column beside its first.
@@ -1961,7 +2053,7 @@ func _render_action() -> void:
 		_action_text.text = "[b]The voyage is over.[/b]"
 		_set_buttons([["Scores", _show_finale], ["New game", _open_menu]])
 		return
-	if decision == null:
+	if decision == null or _choice_sent():
 		_action_text.text = "[color=#8a96a6]The other pirates are deciding…[/color]"
 		_set_buttons([])
 		return
@@ -1991,7 +2083,7 @@ func _render_action() -> void:
 func _render_build_action() -> void:
 	if _build_card < 0:
 		_action_text.text = "[b]Build:[/b] click a card in your hand to build it, or pass for the rest of the round."
-		_set_buttons([["Pass", func() -> void: _submit({"pass": true})]])
+		_set_buttons([["Pass »", func() -> void: _submit({"pass": true})]])
 		return
 	var card := CardDB.get_card(_build_card)
 	var crew_missing := Payment.missing_after_crew(card.cost, game.crew_production_slots(_seat))
@@ -2011,7 +2103,7 @@ func _render_build_action() -> void:
 	if result.ok:
 		_primary(build)
 	_buttons.add_child(build)
-	_buttons.add_child(_button("Pass", func() -> void: _submit({"pass": true})))
+	_buttons.add_child(_button("Pass »", func() -> void: _submit({"pass": true})))
 	_render_pay_panel(card, crew_missing, result)
 	_show_pay_panel(true)
 
@@ -2141,6 +2233,8 @@ func _show_overlay(title: String, subtitle: String) -> HBoxContainer:
 	return cards
 
 func _overlay_buttons(specs: Array) -> void:
+	if specs.is_empty():
+		return # no empty row: it would pad the bottom
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
@@ -2173,15 +2267,28 @@ func _render_overlay() -> void:
 		_render_game_over()
 		return
 	var decision: Variant = game.pending.get(_seat)
-	if decision == null or _hold_choices:
+	if _hold_choices:
 		return
+	var waiting := _waiting_on()
+	if not waiting.is_empty():
+		_render_waiting_overlay(waiting)
+	elif decision == null:
+		return
+	else:
+		_render_choice_overlay(decision)
+	# Sent, until the relay plays it back: the choice stays, dimmed, so its
+	# cards can then animate (a redraw burns them).
+	_overlay_body.modulate.a = 0.55 if _choice_sent() else 1.0
+	if _overlay_hidden:
+		_overlay.visible = false
+	_show_overlay_focus()
+
+func _render_waiting_overlay(waiting: Array) -> void:
+	var names := waiting.map(func(p: int) -> String: return "[b]%s[/b]" % game.players[p].name)
+	_show_overlay("Waiting for the other pirates…", "Your choice is made. Still choosing: %s." % ", ".join(names))
+
+func _render_choice_overlay(decision: Dictionary) -> void:
 	match decision.type:
-		"mulligan":
-			var cards := _show_overlay("First draft", "You may keep this draft hand, or discard it all and draw a new one (once, round 1 only).")
-			var draft: Array = game.players[_seat].draft_hand
-			for id: int in draft:
-				_card_into(cards, id, _overlay_size(draft.size()))
-			_overlay_buttons([["Keep", func() -> void: _submit({"redraw": false}), true, true], ["Redraw all", func() -> void: _submit({"redraw": true})]])
 		"draft_pick":
 			_render_draft_overlay(decision)
 		"choose_one":
@@ -2208,9 +2315,6 @@ func _render_overlay() -> void:
 			for q: int in decision.targets:
 				specs.append(["%s (%d cards)" % [game.players[q].name, game.players[q].hand.size()], func() -> void: _submit({"target": q})])
 			_overlay_buttons(specs)
-	if _overlay_hidden:
-		_overlay.visible = false
-	_show_overlay_focus()
 
 ## Puts the pending choice aside (or brings it back) without changing it.
 func _toggle_overlay() -> void:
@@ -2239,6 +2343,8 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 	var sub := "Pick one card to keep; the rest pass %s. Picked so far: %d." % [direction, pl.picks.size()]
 	if decision.must_discard:
 		sub = "[color=#ffd36b]Compass:[/color] click the card to keep, then a card to discard."
+	elif decision.can_redraw:
+		sub += "\nNot happy with this hand? You may redraw it all, once."
 	var cards := _show_overlay("Draft — round %d" % game.round_index, sub)
 	var pick: int = _selected[0] if _selected.size() > 0 else -1
 	var drop: int = _selected[1] if _selected.size() > 1 else -1
@@ -2251,6 +2357,8 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 			view.mark = CardView.Mark.PAYMENT
 			view.set_caption("Discard")
 	var specs: Array = []
+	if decision.can_redraw:
+		specs.append(["Redraw all", func() -> void: _submit({"redraw": true})])
 	if decision.can_use_compass:
 		specs.append(["Use Compass (%d left)" % game.compasses_available(_seat), func() -> void: _submit({"use_compass": true})])
 	if decision.must_discard:
@@ -2589,11 +2697,11 @@ func _animate_cards(snapshot: Dictionary) -> void:
 			continue # Stayed put (the hand animates itself from _hand_pose).
 		moving.append(view)
 		view.modulate.a = 0.0 # Until the ghost lands; avoids a one-frame pop.
-	var draft_passed := false
+	# Hands were passed, even if a waiting dialog stood in between.
+	var draft_passed := _hands_passed and game.phase == DeckhandGame.Phase.DRAFT
 	var burned := 0
 	for id: int in poses:
 		if not present.has(id):
-			draft_passed = draft_passed or (poses[id].get("zone") == "overlay" and game.phase == DeckhandGame.Phase.DRAFT)
 			if game.discard_pile.has(id) and not _motion.is_flying(id):
 				# Discards burn away where they were, one after the other.
 				_motion.burn(id, poses[id], burned * 0.08)
@@ -2608,6 +2716,8 @@ func _animate_cards(snapshot: Dictionary) -> void:
 	if generation != _motion_gen:
 		return
 	_unplayed = {}
+	if game.phase != DeckhandGame.Phase.DRAFT:
+		_hands_passed = false
 	# On the first refresh the decks were not on the table yet.
 	for key: String in _pile_views:
 		if not anchors.has(key) and is_instance_valid(_pile_views[key]):
@@ -2636,6 +2746,7 @@ func _animate_cards(snapshot: Dictionary) -> void:
 			_motion.fly(view.card_id, old, to, {"target": view, "zone": zone})
 			continue
 		if zone == "overlay" and draft_passed:
+			_hands_passed = false
 			# The next draft hand slides in from the neighbour passing it.
 			var from := to.duplicate()
 			from.center -= Vector2(_pass_direction() * 320.0, 0.0)
@@ -2658,7 +2769,7 @@ func _animate_cards(snapshot: Dictionary) -> void:
 ## holds a moment and fades, without blocking the mouse.
 func _round_title(round_number: int, wind: int, delay: float) -> void:
 	var title := "Round %d" % round_number if round_number < DeckhandGame.ROUNDS else "Final round"
-	var wind_text := "The wind blows %s" % ("clockwise  ↻" if wind == 1 else "counter-clockwise  ↺")
+	var wind_text := "The wind blows %s" % ("clockwise" if wind == 1 else "counter-clockwise")
 	# The round's first choice (the draft) is dealt once the title has gone.
 	_band(title, GOLD, wind_text, delay, true)
 
@@ -2902,9 +3013,11 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"reveal":
 			_sfx.play("reveal")
 		"deal":
-			_sfx.play("card_deal", -2.0)
+			# Another pirate's redraw is played quietly.
+			_sfx.play("card_deal", -2.0 if p == _seat else -12.0)
 		"draft_pass":
 			_sfx.play("card_deal", -9.0)
+			_hands_passed = true
 		"pass":
 			_sfx.play("pass", volume)
 		"build":
@@ -3023,6 +3136,7 @@ func _flash(text: String) -> void:
 # Enter / Space: play the focused card, or else press the green button.
 # H: hide or show the choice.  Each button has its own key, shown on it
 # (the first free letter of its label, else a digit).  Tab still works.
+# In the menu: its buttons' keys too, Up / Down between them, Enter.
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and (event as InputEventMouseMotion).relative.length() > 3.0:
@@ -3043,7 +3157,10 @@ func _input(event: InputEvent) -> void:
 			_open_menu()
 		get_viewport().set_input_as_handled()
 		return
-	if _menu.visible or game == null:
+	if _menu.visible:
+		_menu_key(key)
+		return
+	if game == null:
 		return
 	match key:
 		KEY_LEFT, KEY_RIGHT:
@@ -3055,6 +3172,34 @@ func _input(event: InputEvent) -> void:
 		KEY_H:
 			if (_overlay.visible or _overlay_hidden) and game.phase != DeckhandGame.Phase.GAME_OVER:
 				_toggle_overlay()
+		_:
+			var button := _button_for_key(key)
+			if button == null:
+				return
+			button.pressed.emit()
+	get_viewport().set_input_as_handled()
+
+func _menu_key(key: Key) -> void:
+	# A sheet over the menu may be typed in (the online name and code).
+	if _credits.visible or _online_panel.visible or _settings.visible:
+		return
+	var focus := get_viewport().gui_get_focus_owner()
+	var in_menu := focus != null and (_menu.get_meta("panel") as Control).is_ancestor_of(focus)
+	match key:
+		KEY_UP, KEY_DOWN:
+			if in_menu:
+				return # Godot moves the focus.
+			for button in _visible_buttons():
+				if button.has_meta("primary"):
+					button.grab_focus()
+					break
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+			if in_menu:
+				return # The focused button takes it.
+			for button in _visible_buttons():
+				if button.has_meta("primary"):
+					button.pressed.emit()
+					break
 		_:
 			var button := _button_for_key(key)
 			if button == null:
@@ -3132,16 +3277,20 @@ func _activate_focus() -> void:
 			button.pressed.emit()
 			return
 
-## The buttons on screen: the open choice's first, then the action bar's.
+## The buttons on screen: the open choice's first, then the action bar's;
+## with the menu up, the menu's.
 func _visible_buttons() -> Array[Button]:
 	var out: Array[Button] = []
 	var roots: Array[Node] = []
-	if _overlay.visible and not _overlay_hidden:
-		roots.append(_overlay_body)
-	roots.append(_buttons)
+	if _menu.visible:
+		roots.append(_menu.get_meta("panel"))
+	else:
+		if _overlay.visible and not _overlay_hidden:
+			roots.append(_overlay_body)
+		roots.append(_buttons)
 	for node in roots:
 		for button in node.find_children("*", "Button", true, false):
-			if button.is_visible_in_tree() and not button is OptionButton and not button.is_queued_for_deletion():
+			if button.is_visible_in_tree() and not (button is OptionButton or button is CheckBox) and not button.is_queued_for_deletion():
 				out.append(button)
 	return out
 
@@ -3161,7 +3310,13 @@ func _assign_keys() -> void:
 	_badges_queued = false
 	# Keys with another meaning are never handed out.
 	var taken := {KEY_H: true, KEY_SPACE: true}
-	for button in _visible_buttons():
+	var buttons := _visible_buttons()
+	for button in buttons:
+		if button.has_meta("plain_key"):
+			taken[button.get_meta("key")] = true
+	for button in buttons:
+		if button.has_meta("plain_key"):
+			continue
 		var key := KEY_NONE
 		var label := button.text.to_upper()
 		if label.begins_with("HIDE") or label.begins_with("SHOW THE"):
@@ -3327,6 +3482,8 @@ func _describe(id: int) -> void:
 				banners.append(_banner(b, 22))
 			rows.append(["Banners", _icons(banners)])
 	_info_rows(rows)
+	if card.kind == "infamy" and game != null and game.row.any(func(slot: Dictionary) -> bool: return slot.cards.has(id)):
+		_info_text("[color=#5a4630]Claimed by the first pirate whose banners meet this requirement.[/color]", 14)
 
 	# Effects: an icon column, then the text (wrapping under itself).
 	var effects: Array = []
@@ -3352,6 +3509,11 @@ func _describe(id: int) -> void:
 				options.append(_res(token, 24))
 		_info_line()
 		_info_rows([["Discard", "[color=#7a6248] / [/color]".join(options)]])
+	elif game != null and game.players[_seat].windfall == id:
+		# The Windfall pays two coins: two silver, or a gold and a silver.
+		var pairs := [_icons([_res("cs", 24), _res("cs", 24)]), _icons([_res("c", 24), _res("cs", 24)])]
+		_info_line()
+		_info_rows([["Discard", "[color=#7a6248] / [/color]".join(pairs)]])
 
 ## Icons with even spacing between them.
 static func _icons(parts: Array) -> String:

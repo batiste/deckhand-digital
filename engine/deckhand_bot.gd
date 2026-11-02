@@ -37,8 +37,6 @@ static func decide(game: DeckhandGame, p: int) -> Dictionary:
 	if game.players[p].virtual:
 		return _decide_random(game, p, decision)
 	match decision.type:
-		"mulligan":
-			return {"redraw": _draft_hand_quality(game, p) < 4.5}
 		"draft_pick":
 			return _draft_pick(game, p, decision)
 		"build":
@@ -288,6 +286,8 @@ static func _draft_hand_quality(game: DeckhandGame, p: int) -> float:
 	return values.slice(0, 3).reduce(func(a: float, b: float) -> float: return a + b, 0.0)
 
 static func _draft_pick(game: DeckhandGame, p: int, decision: Dictionary) -> Dictionary:
+	if decision.can_redraw and _draft_hand_quality(game, p) < 4.5:
+		return {"redraw": true}
 	if decision.can_use_compass and game.players[p].draft_hand.size() > 1:
 		return {"use_compass": true}
 	var hand: Array = game.players[p].draft_hand
