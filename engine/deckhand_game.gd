@@ -47,6 +47,9 @@ var infamy_deck: Array[int] = []
 var removed: Array[int] = [] # Infamy cards lost to ties
 ## Row slots: {cards: Array[int], revealed: bool}. Revealed cards stay until claimed.
 var row: Array[Dictionary] = []
+## Face-down Row cards put there by a player: card id -> {player, via:
+## "windfall" (stacked) or "swap" (by a Telescope)}. Others came with the Row.
+var row_origins := {}
 var round_index := 0
 var phase := Phase.SETUP
 var build_step := 0
@@ -83,6 +86,7 @@ func setup(seats: Array, seed_value: int = -1, game_options: Dictionary = {}) ->
 			"draft_hand": [] as Array[int],
 			"picks": [] as Array[int],
 			"compasses_used": 0,
+			"compass_draws": 0, # cards drawn by Compasses for the current pick
 			"pending_battles": 0,
 			"built_this_step": -1,
 		})
@@ -90,6 +94,7 @@ func setup(seats: Array, seed_value: int = -1, game_options: Dictionary = {}) ->
 	var infamy := CardDB.ids_of_kind("infamy")
 	_shuffle(infamy)
 	row.clear()
+	row_origins.clear()
 	for i in range(ROW_SIZE):
 		row.append({"cards": [infamy.pop_back()] as Array[int], "revealed": false})
 	for p in players:
@@ -221,9 +226,9 @@ func check_payment(p: int, card_id: int, discards: Array, use_windfall: bool) ->
 ## A fingerprint of the whole game state: equal on every machine that applied
 ## the same actions to the same seed (online play compares them).
 func checksum() -> int:
-	var state := [rng.state, round_index, phase, build_step, supply, discard_pile, infamy_deck, removed, row, pending.keys(), _queue]
+	var state := [rng.state, round_index, phase, build_step, supply, discard_pile, infamy_deck, removed, row, row_origins, pending.keys(), _queue]
 	for p in players:
-		state.append([p.hand, p.windfall, p.crew, p.passed, p.draft_hand, p.picks, p.compasses_used, p.pending_battles])
+		state.append([p.hand, p.windfall, p.crew, p.passed, p.draft_hand, p.picks, p.compasses_used, p.compass_draws, p.pending_battles])
 	return hash(var_to_str(state))
 
 ## Players from `candidates` in priority order: most tentacles first
@@ -320,6 +325,7 @@ func _draw_supply() -> int:
 		discard_pile.clear()
 		_shuffle(supply)
 		_log("The discard pile is shuffled into a new Supply deck.")
+		event.emit("shuffle", {"deck": "supply"})
 	return supply.pop_back()
 
 func _draw_into_hand(p: int, count: int) -> int:
@@ -449,7 +455,7 @@ func _redraw_draft(p: int) -> void:
 			players[p].draft_hand.append(id)
 	_log("%s redraws their draft hand." % _name(p))
 	event.emit("deal", {"player": p})
-	_ask_draft_pick(p, false)
+	_ask_draft_pick(p)
 
 func compasses_available(p: int) -> int:
 	return symbol_count(p, "compasses") - players[p].compasses_used
@@ -462,17 +468,19 @@ func _task_draft_step(_task: Dictionary) -> void:
 		_log("Draft complete.")
 		return
 	for p in range(players.size()):
-		_ask_draft_pick(p, false, round_index == 1 and players[p].picks.is_empty())
+		_ask_draft_pick(p, round_index == 1 and players[p].picks.is_empty())
 	_push_front([{"type": "draft_resolve"}])
 
-func _ask_draft_pick(p: int, must_discard: bool, can_redraw: bool = false) -> void:
+## Compasses may be used one after another on the same pick: each draws a
+## card, and the pick then discards as many cards as they drew.
+func _ask_draft_pick(p: int, can_redraw: bool = false) -> void:
 	var cards_left := supply.size() + discard_pile.size()
 	_ask(p, {
 		"type": "draft_pick",
 		"group": true,
-		"must_discard": must_discard,
+		"discards": players[p].compass_draws,
 		"can_redraw": can_redraw,
-		"can_use_compass": not must_discard and compasses_available(p) > 0 and cards_left > 0,
+		"can_use_compass": compasses_available(p) > 0 and cards_left > 0,
 	})
 
 func _validate_draft_pick(p: int, decision: Dictionary, action: Dictionary) -> String:
@@ -483,10 +491,13 @@ func _validate_draft_pick(p: int, decision: Dictionary, action: Dictionary) -> S
 		return "" if decision.can_use_compass else "No Compass available"
 	if not hand.has(action.get("pick", -1)):
 		return "Pick a card from your draft hand"
-	if decision.must_discard:
-		var d: int = action.get("discard", -1)
-		if not hand.has(d) or d == action.pick:
-			return "Choose another card to discard (Compass)"
+	var discards: Array = action.get("discards", [])
+	if discards.size() != decision.discards:
+		return "Choose %d card%s to discard (Compass)" % [decision.discards, "" if decision.discards == 1 else "s"]
+	for i in discards.size():
+		var d: int = discards[i]
+		if not hand.has(d) or d == action.pick or discards.find(d) != i:
+			return "Choose other cards to discard (Compass)"
 	return ""
 
 func _task_draft_resolve(_task: Dictionary) -> void:
@@ -502,10 +513,9 @@ func _task_draft_resolve(_task: Dictionary) -> void:
 			var id := _draw_supply()
 			if id >= 0:
 				players[p].draft_hand.append(id)
+				players[p].compass_draws += 1
 				_log("%s uses a Compass." % _name(p))
-				_ask_draft_pick(p, true)
-			else:
-				_ask_draft_pick(p, false)
+			_ask_draft_pick(p)
 		_push_front([{"type": "draft_resolve"}])
 		return
 
@@ -513,9 +523,10 @@ func _task_draft_resolve(_task: Dictionary) -> void:
 		var action: Dictionary = _answers[p]
 		players[p].draft_hand.erase(action.pick)
 		players[p].picks.append(action.pick)
-		if action.has("discard") and action.discard >= 0:
-			players[p].draft_hand.erase(action.discard)
-			discard_pile.append(action.discard)
+		for d: int in action.get("discards", []):
+			players[p].draft_hand.erase(d)
+			discard_pile.append(d)
+		players[p].compass_draws = 0
 	_answers.clear()
 
 	var n := players.size()
@@ -632,10 +643,12 @@ func _discard_windfall(p: int, dest: int) -> void:
 	players[p].windfall = -1
 	if dest != WINDFALL_DECK and dest >= 0 and dest < row.size() and not row[dest].revealed:
 		row[dest].cards.append(id)
+		row_origins[id] = {"player": p, "via": "windfall"}
 		_log("%s stacks their Windfall on Row slot %d." % [_name(p), dest + 1])
 	else:
 		infamy_deck.append(id)
 		_shuffle(infamy_deck)
+		event.emit("shuffle", {"deck": "infamy"})
 		_log("%s shuffles their Windfall into the Infamy deck." % _name(p))
 
 # --- Crew and effects -------------------------------------------------------
@@ -712,16 +725,33 @@ func _start_telescope(p: int, source: int) -> void:
 	if slots.is_empty():
 		_ask(p, {"type": "telescope_place", "card": infamy_deck[-1], "source": source})
 	elif slots.size() == 1:
-		_ask(p, {"type": "telescope_swap", "slot": slots[0], "row_card": row[slots[0]].cards[-1], "deck_card": infamy_deck[-1], "source": source})
+		_telescope_on_slot(p, slots[0], source)
 	else:
 		_ask(p, {"type": "telescope_slot", "slots": slots, "source": source})
+
+## A slot is chosen: with Windfalls stacked on it, which of its cards to look at.
+func _telescope_on_slot(p: int, slot: int, source: int) -> void:
+	if row[slot].cards.size() > 1:
+		_ask(p, {"type": "telescope_card", "slot": slot, "cards": row[slot].cards.duplicate(), "source": source})
+	else:
+		_ask_telescope_swap(p, slot, 0, source)
+
+func _ask_telescope_swap(p: int, slot: int, index: int, source: int) -> void:
+	_ask(p, {"type": "telescope_swap", "slot": slot, "index": index, "row_card": row[slot].cards[index], "deck_card": infamy_deck[-1], "source": source})
 
 func _validate_telescope_slot(_p: int, decision: Dictionary, action: Dictionary) -> String:
 	return "" if decision.slots.has(action.get("slot", -1)) else "Choose an unrevealed Row slot"
 
 func _answer_telescope_slot(p: int, decision: Dictionary, action: Dictionary) -> void:
-	var slot: int = action.slot
-	_ask(p, {"type": "telescope_swap", "slot": slot, "row_card": row[slot].cards[-1], "deck_card": infamy_deck[-1], "source": decision.source})
+	_telescope_on_slot(p, action.slot, decision.source)
+
+## Action: {"index"}, the card's place in the slot's stack (0: the Row's own).
+func _validate_telescope_card(_p: int, decision: Dictionary, action: Dictionary) -> String:
+	var index: int = action.get("index", -1)
+	return "" if index >= 0 and index < decision.cards.size() else "Choose a card of the stack"
+
+func _answer_telescope_card(p: int, decision: Dictionary, action: Dictionary) -> void:
+	_ask_telescope_swap(p, decision.slot, action.index, decision.source)
 
 func _validate_telescope_swap(_p: int, _decision: Dictionary, _action: Dictionary) -> String:
 	return ""
@@ -729,14 +759,17 @@ func _validate_telescope_swap(_p: int, _decision: Dictionary, _action: Dictionar
 func _answer_telescope_swap(p: int, decision: Dictionary, action: Dictionary) -> void:
 	if action.get("swap", false):
 		var slot_cards: Array[int] = row[decision.slot].cards
-		slot_cards[-1] = infamy_deck.pop_back()
+		slot_cards[decision.index] = infamy_deck.pop_back()
 		infamy_deck.append(decision.row_card)
+		row_origins.erase(decision.row_card)
+		row_origins[slot_cards[decision.index]] = {"player": p, "via": "swap"}
 		_log("%s peeks with a Telescope and swaps an Infamy card in slot %d." % [_name(p), decision.slot + 1])
 		event.emit("telescope", {"player": p})
 	else:
 		_log("%s peeks with a Telescope." % _name(p))
 		event.emit("telescope", {"player": p})
 	_shuffle(infamy_deck)
+	event.emit("shuffle", {"deck": "infamy"})
 
 func _validate_telescope_place(_p: int, _decision: Dictionary, _action: Dictionary) -> String:
 	return ""
@@ -752,6 +785,7 @@ func _answer_telescope_place(p: int, decision: Dictionary, action: Dictionary) -
 		_log("%s peeks with a Telescope." % _name(p))
 		event.emit("telescope", {"player": p})
 	_shuffle(infamy_deck)
+	event.emit("shuffle", {"deck": "infamy"})
 
 func _start_hook(p: int, source: int) -> void:
 	if is_solo_variant():

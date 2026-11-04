@@ -19,8 +19,10 @@ float noise(float x) {
 
 void fragment() {
 	float aspect = SCREEN_PIXEL_SIZE.y / SCREEN_PIXEL_SIZE.x;
-	// The flame: a slow breath, a quicker flutter, and a slight sway.
-	float flicker = 0.94 + 0.04 * sin(TIME * 0.9) + 0.035 * (noise(TIME * 5.0) - 0.5) + 0.02 * (noise(TIME * 13.0) - 0.5);
+	// The flame: a slow breath, a gentle flutter, and a slight sway. Only
+	// slow terms: the clock ticks 10 times a second (see effects.gd),
+	// so a faster flutter would step visibly.
+	float flicker = 0.94 + 0.04 * sin(TIME * 0.9) + 0.035 * (noise(TIME * 2.0) - 0.5);
 	vec2 sway = vec2(noise(TIME * 0.7) - 0.5, noise(TIME * 0.5 + 7.0) - 0.5) * 0.015;
 	vec2 p = (UV - center - sway) * vec2(aspect, 1.0);
 	float d = length(p) / (radius * flicker);

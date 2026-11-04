@@ -244,7 +244,8 @@ Instant effects trigger when the card is added to Crew.
 - During each Draft, each Compass in Crew may be used once:
   - draw 1 additional draft card
   - discard 1 draft card before passing
-- Multiple Compasses can be used at different draft moments.
+- Multiple Compasses can be used at different draft moments, or together on the same pick:
+  draw 1 card per Compass, then keep 1 card and discard 1 card per Compass used.
 
 ### 13.5 Battle Effect
 
@@ -330,7 +331,7 @@ Points the rulebook leaves open, and how the engine resolves them:
   a Tentacle gained from one claim can break a tie on another card. A tie that
   Tentacles cannot break removes the card from the game.
 - **Pending Battles** carry over to the player's next build, even into a later round.
-- **Telescope on a stacked slot** looks at the top card of the stack.
+- **Telescope on a stacked slot**: the player first chooses the slot, then which card of its stack to look at (the cards above the first are Windfalls stacked by players, and who stacked each is public), and may swap that one.
 - **Hook** targets are chosen by the hooking player; the stolen card is random.
 - **Payment**: the player picks which cards to discard; the engine works out the
   best use of them (coin, revealed resource or pair) automatically.

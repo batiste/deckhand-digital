@@ -119,7 +119,7 @@ func _init() -> void:
 	_texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	var material := ShaderMaterial.new()
-	material.shader = _shader
+	material.shader = Effects.frozen(_shader) # animated only while it shimmers
 	# Card images include a 3 mm bleed around the 63 x 88 mm trim.
 	material.set_shader_parameter("bleed_margin_uv", Vector2(3.0 / 69.0, 3.0 / 94.0))
 	material.set_shader_parameter("content_inset_px", 2.0)
@@ -212,8 +212,10 @@ func _process(delta: float) -> void:
 		if absf(mouse.x) <= 1.1 and absf(mouse.y) <= 1.1:
 			target = mouse.clampf(-1.0, 1.0)
 	_tilt = _tilt.lerp(target, minf(1.0, delta * 10.0))
-	if not lifted and _tilt.length() < 0.002:
-		_tilt = Vector2.ZERO
+	# Settled: stop until the pointer moves again (see _gui_input), or the
+	# card would keep the whole screen redrawing while the pointer rests on it.
+	if _tilt.distance_to(target) < 0.002:
+		_tilt = target
 		set_process(false)
 	_apply_tilt()
 	# The resting glare drifts with the lean, like light on a turned card.
@@ -294,7 +296,16 @@ func _refresh_mark() -> void:
 	_badge.visible = mark == Mark.PAYMENT or mark == Mark.SELECTED
 	if _badge.visible:
 		_badge.texture = _mark_badge(mark == Mark.SELECTED)
-	_set_param("shimmer", 1.0 if mark == Mark.CLAIMABLE else 0.0)
+	var claimable := mark == Mark.CLAIMABLE
+	_set_param("shimmer", 1.0 if claimable else 0.0)
+	# Only a shimmering card needs TIME: the rest stay frozen, so they never
+	# force the screen to redraw (see Effects).
+	var material := _texture_rect.material as ShaderMaterial
+	if claimable:
+		Effects.use(material, _shader)
+	else:
+		material.remove_meta("effects_base")
+		material.shader = Effects.frozen(_shader)
 	modulate = Color(0.55, 0.55, 0.55) if mark == Mark.DISABLED else Color.WHITE
 
 ## A green check (to build) or a red cross (to discard) with a light rim,
@@ -336,6 +347,8 @@ static func _segment_distance(p: Vector2, a: Vector2, b: Vector2) -> float:
 	return p.distance_to(a + ab * t)
 
 func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion and lifted:
+		set_process(true) # lean towards the pointer again
 	if not interactive:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:

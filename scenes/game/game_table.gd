@@ -8,10 +8,12 @@ const ABSENT_GRACE := 15.0
 const ICONS := "res://assets/icons/"
 const FONT_REGULAR := "res://scenes/shared/fonts/signika/Signika-Regular.ttf"
 const FONT_BOLD := "res://scenes/shared/fonts/signika/Signika-SemiBold.ttf"
+# Signika lacks symbols like ✓ ★ ● ↻; desktop falls back to system fonts, the web export has none.
+const FONT_SYMBOLS := "res://scenes/shared/fonts/dejavu/DejaVuSans-Symbols.ttf"
 
 const HAND_CARD := Vector2(172, 235)
 const ROW_CARD := Vector2(126, 171)
-const PILE_CARD := Vector2(78, 106)
+const PILE_CARD := Vector2(90, 122)
 ## Offset of each card edge drawn under a deck, for its thickness.
 const PILE_STEP := Vector2(1.0, 2.0)
 const CREW_CARD := Vector2(128, 174)
@@ -20,10 +22,9 @@ const CREW_PEEK := 49.0
 ## Crew groups, in order, with their headings.
 const CREW_GROUPS := {"basic": "Basic", "advanced": "Advanced", "support": "Support", "infamy": "Infamy"}
 const CREW_MAX_COLUMNS := 6
-const RESOURCE_ORDER: Array[String] = ["g", "p", "r", "h", "s", "e", "cs", "c"]
 const OPP_CARD := Vector2(50, 68)
 const OPP_COLUMN_WIDTH := 340.0
-const OVERLAY_CARD := Vector2(165, 225) # leaves even gaps around the choice
+const OVERLAY_CARD := Vector2(181, 247) # leaves even gaps around the choice
 const OVERLAY_CARD_SMALL := Vector2(135, 184)
 const LEDGER_WIDTH := 216.0
 ## How much of the hand shows above the bottom edge; hovered cards rise fully.
@@ -33,10 +34,14 @@ const HAND_NEIGHBOUR_SCALE := 1.12
 const ZOOM_CARD := Vector2(340, 462)
 ## Global size multipliers for text and inline icons.
 const TEXT_SCALE := 1.15
+const LARGE_TEXT := 1.15 # "Larger text", on top of TEXT_SCALE
 const ICON_SCALE := 1.25
 
 const WOOD := "res://assets/ui/wood.jpg"
 const ROUNDED_SHADER := preload("res://scenes/game/rounded_panel.gdshader")
+const SHINE_SHADER := preload("res://scenes/game/shine.gdshader")
+const RAYS_SHADER := preload("res://scenes/game/rays.gdshader")
+const VP_SEAL := preload("res://assets/vp.png")
 const PARCHMENT := "res://assets/ui/parchment.jpg"
 const LOGO := "res://assets/new-logo.png"
 const PUBLISHER_LOGO := "res://assets/tidale-logo.png"
@@ -51,8 +56,10 @@ const MENU_ART: Array[String] = [
 const SLIDE_TIME := 12.0
 const SLIDE_FADE := 1.8
 
-const TABLE_TINT := Color(0.26, 0.18, 0.12)
-const PANEL_BG := Color(0.06, 0.045, 0.035, 0.84)
+const TABLE_TINT := Color(0.234, 0.162, 0.108)
+const TABLE_PLANKS := 3
+const PANEL_BG := Color(0, 0, 0, 0) # board zones: no box, the table shows through
+const TABLE_SHADE := Color(0.06, 0.045, 0.035, 0.45) # dims the whole table under the play
 const INK := Color(0.22, 0.13, 0.06)
 const GOLD := Color(1.0, 0.82, 0.42)
 const MUTED := Color(0.62, 0.68, 0.76)
@@ -103,6 +110,10 @@ var _overlay_hidden := false # the player put the current choice aside to look a
 var _kb_hand := false # the focused hand card was chosen with the keyboard
 var _kb_card := -1 # card focused with the keyboard in a choice overlay
 var _badges_queued := false
+var _was_fullscreen := true # the window's mode when last looked at
+var _key_hints := true # the key caps on buttons (Settings)
+static var text_scale := TEXT_SCALE # TEXT_SCALE, larger with "Larger text"
+static var _reopen_settings := false # the scene was reloaded from Settings
 var _using_keys := false # the player is moving between cards with the keyboard
 var _kb_index := 0 # position of the card last focused with the keyboard
 
@@ -118,7 +129,7 @@ var _board: Control # the Infamy Row and the decks
 var _action_bar: Control
 var _pay_panel: PanelContainer # paying for a build: floats over the crew
 var _pay_body: VBoxContainer
-var _ledger_vp: RichTextLabel
+var _vp_text: RichTextLabel
 var _ledger_body: RichTextLabel
 var _hand_area: Control
 var _action_text: RichTextLabel
@@ -128,6 +139,7 @@ var _overlay: Control
 var _overlay_body: VBoxContainer
 var _menu: Control
 var _credits: Control
+var _rules: Control
 var _settings: Control
 var _online_panel: Control
 var _online_ui := {} # the online panel's controls, by name
@@ -139,6 +151,7 @@ var _sfx: Sfx
 var _music: Music
 var _curtain: ColorRect # black, for fading into a new game
 var _slides: Array[TextureRect] = [] # two layers for crossfading the title art
+var _slide_tween: Tween # paused while the menu is hidden
 
 # Card motion: views are rebuilt on every refresh, so poses are captured before
 # and replayed by CardMotion after layout.
@@ -153,15 +166,31 @@ var _unplayed := {} # snapshot whose animation has not started yet
 var _hands_passed := false # the next draft hand slides in from a neighbour
 var _title_layer: CanvasLayer # the round title on show, if any
 var _finale: CanvasLayer # the end-of-game screen, built once per game
+var _finale_cued := false # the end piece has started; the screen follows
 var _hold_choices := false # the round title is up: choices wait for it
 var _lost := {} # contested Infamy card id -> the tied players, until it is shown
 var _spotlights := 0 # Infamy cards (claimed or contested) still to show; choices wait
 var _in_spotlight := {} # card id -> true while shown mid-table (its table copy stays hidden)
+# Infamy cards entering the spotlight together, by the same pirate, are
+# shown side by side: {key, frame, ids, after, done}. Each group waits for
+# the one before it (`after`) to clear the table.
+var _spot_groups: Array = []
+var _spot_last: Dictionary = {}
+signal _spotlight_cleared
 var _claimed := {} # Infamy card id -> claiming player, until its flight starts
 var _shown := {} # player -> {vp, banners} last displayed, to animate gains
+var _fonts: Array[Font] = [] # keeps the fallback-patched fonts loaded
 
 func _ready() -> void:
 	CardDB.ensure_loaded()
+	# Held in _fonts: an unreferenced font drops out of the resource cache, and
+	# the next load() would return a fresh copy without the fallback.
+	for path in [FONT_REGULAR, FONT_BOLD]:
+		var font: FontFile = load(path)
+		if font.fallbacks.is_empty():
+			font.fallbacks = [load(FONT_SYMBOLS)]
+		_fonts.append(font)
+	_load_display()
 	_sfx = Sfx.new()
 	add_child(_sfx)
 	_net = NetClient.new()
@@ -185,6 +214,7 @@ func _ready() -> void:
 	_motion = CardMotion.new()
 	_motion.layer = 5
 	add_child(_motion)
+	add_child(PerfOverlay.new()) # F3
 	var curtain_layer := CanvasLayer.new()
 	curtain_layer.layer = 30
 	add_child(curtain_layer)
@@ -195,6 +225,9 @@ func _ready() -> void:
 	curtain_layer.add_child(_curtain)
 	_open_menu()
 	_intro()
+	if _reopen_settings:
+		_reopen_settings = false
+		_show_settings()
 
 # --- Game lifecycle ---------------------------------------------------------
 
@@ -245,13 +278,18 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_claimed.clear()
 	if is_instance_valid(_finale):
 		_finale.queue_free()
+	_finale_cued = false
 	_lost.clear()
 	_spotlights = 0
 	_in_spotlight.clear()
+	_spot_groups = []
+	_spot_last = {}
 	_hold_choices = false
 	game.start()
 
 func _process(delta: float) -> void:
+	if Effects.tick(delta):
+		queue_redraw() # the screen is redrawn whole: any request will do
 	if game == null or game.phase == DeckhandGame.Phase.GAME_OVER:
 		return
 	var drive := _bot_seats()
@@ -406,17 +444,37 @@ func _build_ui() -> void:
 	bg.set_anchors_preset(PRESET_FULL_RECT)
 	bg.mouse_filter = MOUSE_FILTER_IGNORE
 	add_child(bg)
-	var planks := _cover(WOOD)
+	# The wood texture is one plank: lay a few across the table, mirrored
+	# in turn so their grain does not repeat.
+	var planks := VBoxContainer.new()
+	planks.set_anchors_preset(PRESET_FULL_RECT)
+	planks.add_theme_constant_override("separation", 0)
+	planks.mouse_filter = MOUSE_FILTER_IGNORE
 	planks.modulate = TABLE_TINT
 	add_child(planks)
+	for i in TABLE_PLANKS:
+		var plank := TextureRect.new()
+		plank.texture = load(WOOD)
+		plank.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		plank.stretch_mode = TextureRect.STRETCH_SCALE
+		plank.size_flags_vertical = SIZE_EXPAND_FILL
+		plank.flip_h = i % 2 == 1
+		plank.flip_v = i == 1
+		plank.mouse_filter = MOUSE_FILTER_IGNORE
+		planks.add_child(plank)
 	# Lamplight: a warm, flickering pool, the edges in shadow.
 	var candle := ColorRect.new()
 	candle.set_anchors_preset(PRESET_FULL_RECT)
 	candle.mouse_filter = MOUSE_FILTER_IGNORE
 	var light := ShaderMaterial.new()
-	light.shader = preload("res://scenes/game/candlelight.gdshader")
+	Effects.use(light, preload("res://scenes/game/candlelight.gdshader"))
 	candle.material = light
 	add_child(candle)
+	var shade := ColorRect.new()
+	shade.color = TABLE_SHADE
+	shade.set_anchors_preset(PRESET_FULL_RECT)
+	shade.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(shade)
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(PRESET_FULL_RECT)
@@ -448,6 +506,7 @@ func _build_ui() -> void:
 	_phase_label.size_flags_horizontal = SIZE_EXPAND_FILL
 	_phase_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	top.add_child(_phase_label)
+	top.add_child(_button("How to play", _show_rules))
 	top.add_child(_button("Menu", _open_menu))
 
 	# Infamy row and piles
@@ -463,14 +522,16 @@ func _build_ui() -> void:
 	_row_box = HBoxContainer.new()
 	_row_box.add_theme_constant_override("separation", 16)
 	row_v.add_child(_row_box)
+	board.add_child(_gold_line(true))
 	var piles_panel := _panel()
 	board.add_child(piles_panel)
 	var piles_v := VBoxContainer.new()
 	piles_panel.add_child(piles_v)
-	piles_v.add_child(_label("Decks", 14, MUTED))
 	_piles_box = HBoxContainer.new()
 	_piles_box.add_theme_constant_override("separation", 10)
 	piles_v.add_child(_piles_box)
+
+	main.add_child(_gold_line(false))
 
 	# Your score and resources beside your crew; overlays sit right of it.
 	var home := HBoxContainer.new()
@@ -478,6 +539,7 @@ func _build_ui() -> void:
 	home.add_theme_constant_override("separation", 12)
 	main.add_child(home)
 	var ledger := _panel()
+	_pad(ledger, 16)
 	ledger.custom_minimum_size.x = LEDGER_WIDTH
 	home.add_child(ledger)
 	var ledger_scroll := ScrollContainer.new()
@@ -488,25 +550,18 @@ func _build_ui() -> void:
 	ledger_v.size_flags_horizontal = SIZE_EXPAND_FILL
 	ledger_v.add_theme_constant_override("separation", 0)
 	ledger_scroll.add_child(ledger_v)
-	_ledger_vp = _rich(16)
-	_ledger_vp.fit_content = true
-	ledger_v.add_child(_ledger_vp)
 	_ledger_body = _with_tips(_rich(15))
 	_ledger_body.fit_content = true
 	ledger_v.add_child(_ledger_body)
 
+	home.add_child(_gold_line(true))
+
 	# Your crew
 	var crew_panel := _panel()
+	_pad(crew_panel, 16)
 	crew_panel.size_flags_horizontal = SIZE_EXPAND_FILL
 	home.add_child(crew_panel)
 	_crew_panel = crew_panel
-	# "Your crew" as a large, faint title in the background of the panel.
-	var crew_title := _label("Your crew", 40, Color(1, 1, 1, 0.05), true)
-	crew_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	crew_title.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-	crew_title.size_flags_horizontal = SIZE_FILL
-	crew_title.size_flags_vertical = SIZE_FILL
-	crew_panel.add_child(crew_title)
 	# Until the first card is built: what the panel is for.
 	_crew_hint = _label("Built cards join your crew here.\nTheir production pays for later builds.", 22, Color(1, 0.93, 0.8, 0.28))
 	_crew_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -524,6 +579,19 @@ func _build_ui() -> void:
 	_crew_columns = HBoxContainer.new()
 	_crew_columns.add_theme_constant_override("separation", 18)
 	crew_scroll.add_child(_crew_columns)
+	# Your score, on the wax seal in the crew's top-right corner.
+	var corner := Control.new()
+	corner.mouse_filter = MOUSE_FILTER_IGNORE
+	crew_panel.add_child(corner)
+	var vp_seal := _wax_seal(Vector2(77, 93))
+	vp_seal.anchor_left = 1.0
+	vp_seal.anchor_right = 1.0
+	vp_seal.offset_left = -77.0 - 10.0
+	vp_seal.offset_right = -10.0
+	vp_seal.offset_top = 8.0
+	vp_seal.offset_bottom = 8.0 + 93.0
+	corner.add_child(vp_seal)
+	_vp_text = _seal_text(vp_seal)
 	# How many columns fit depends on the width.
 	crew_scroll.resized.connect(func() -> void:
 		if game != null:
@@ -624,6 +692,14 @@ func _build_menu() -> void:
 	_menu.set_anchors_preset(PRESET_FULL_RECT)
 	_menu.theme = _make_theme()
 	layer.add_child(_menu)
+	# The title paintings pan forever: hold them while the menu is hidden,
+	# or the game would keep redrawing for nothing.
+	_menu.visibility_changed.connect(func() -> void:
+		if _slide_tween != null and _slide_tween.is_valid():
+			if _menu.visible:
+				_slide_tween.play()
+			else:
+				_slide_tween.pause())
 	# Black under the paintings, so the table never shows through a fade.
 	var black := ColorRect.new()
 	black.color = Color.BLACK
@@ -654,10 +730,11 @@ func _build_menu() -> void:
 	logo.custom_minimum_size = Vector2(640, 302)
 	logo.resized.connect(func() -> void: logo.pivot_offset = logo.size / 2.0)
 	var gleam := ShaderMaterial.new()
-	gleam.shader = preload("res://scenes/game/logo.gdshader")
+	Effects.use(gleam, preload("res://scenes/game/logo.gdshader"))
 	logo.material = gleam
 	column.add_child(logo)
 	var panel := _wood_panel()
+	Effects.use(panel.material, ROUNDED_SHADER)
 	(panel.material as ShaderMaterial).set_shader_parameter("lantern", 1.0)
 	(panel.material as ShaderMaterial).set_shader_parameter("rim_width", 2.5)
 	panel.size_flags_horizontal = SIZE_SHRINK_CENTER
@@ -713,6 +790,9 @@ func _build_menu() -> void:
 	footer.add_theme_constant_override("separation", 6)
 	v.add_child(footer)
 	var down: Array[Control] = [online]
+	down.append(_quiet(_button("How to play", _show_rules)))
+	footer.add_child(down[-1])
+	footer.add_child(_label("·", 15, MUTED))
 	down.append(_quiet(_button("Settings", _show_settings)))
 	footer.add_child(down[-1])
 	footer.add_child(_label("·", 15, MUTED))
@@ -731,6 +811,7 @@ func _build_menu() -> void:
 	_menu.set_meta("opponents", opp)
 	_menu.set_meta("resume", resume)
 	_build_credits()
+	_build_rules()
 	_build_online()
 	_build_settings()
 	_menu.set_meta("logo", logo)
@@ -746,7 +827,7 @@ const CREDITS := [
 	["Playtesting", ["Jessica Gibbons", "Gaël Nardin", "Jonathan Bieler", "Eduard Schäli", "Riccardo Zoppello", "Lucas Clark", "the Break My Game community", "and many others"]],
 	["Music", ["Composed with Suno"]],
 	["Sound effects", ["Synthesised for this game"]],
-	["Typeface", ["Signika, by Anna Giedryś (SIL Open Font License)"]],
+	["Typeface", ["Signika, by Anna Giedryś (SIL Open Font License)", "DejaVu Sans symbols (Bitstream Vera License)"]],
 	["Engine", ["Made with the Godot Engine"]],
 ]
 
@@ -803,12 +884,13 @@ func _build_settings() -> void:
 	_settings = sheet[0]
 	var v: VBoxContainer = sheet[1]
 	v.custom_minimum_size.x = 420
+	v.add_child(_menu_heading("Sound"))
 	var mixer := GridContainer.new()
 	mixer.columns = 2
 	mixer.add_theme_constant_override("h_separation", 16)
 	mixer.add_theme_constant_override("v_separation", 10)
 	v.add_child(mixer)
-	var first: HSlider = null
+	var ring: Array[Control] = []
 	for spec in [["Master", "Volume"], ["Music", "Music"], ["Effects", "Sound effects"]]:
 		var bus: String = spec[0]
 		mixer.add_child(_label(spec[1], 17))
@@ -833,17 +915,138 @@ func _build_settings() -> void:
 			dragging[0] = false
 			settled.call())
 		mixer.add_child(slider)
-		if first == null:
-			first = slider
+		ring.append(slider)
+	v.add_child(_menu_heading("Display"))
+	var config := ConfigFile.new()
+	config.load(NetClient.SETTINGS)
+	# A browser tab has its own full screen (and no window to resize).
+	if not OS.has_feature("web"):
+		var full := CheckBox.new()
+		full.text = "Fullscreen"
+		full.button_pressed = config.get_value("display", "fullscreen", true)
+		full.toggled.connect(func(on: bool) -> void:
+			_save_setting("display", "fullscreen", on)
+			_apply_fullscreen(on))
+		v.add_child(full)
+		ring.append(full)
+	var larger := CheckBox.new()
+	larger.text = "Larger text"
+	larger.button_pressed = config.get_value("display", "large_text", false)
+	larger.toggled.connect(func(on: bool) -> void:
+		_save_setting("display", "large_text", on)
+		# Every label is sized as it is built: rebuild the scene, if no game
+		# would be lost; otherwise from the next start.
+		if game == null:
+			_reopen_settings = true
+			get_tree().reload_current_scene.call_deferred()
+		else:
+			_flash("Larger text applies from the next start."))
+	v.add_child(larger)
+	ring.append(larger)
+	var reduced := CheckBox.new()
+	reduced.text = "Reduced effects (smoother on older computers)"
+	reduced.button_pressed = Effects.reduced
+	reduced.toggled.connect(func(on: bool) -> void:
+		_save_setting("display", "reduced_effects", on)
+		Effects.set_reduced(on)
+		# Shaders on screen switch at once; the menu is rebuilt for its
+		# panning paintings (a game in progress hides them anyway).
+		if game == null:
+			_reopen_settings = true
+			get_tree().reload_current_scene.call_deferred())
+	v.add_child(reduced)
+	ring.append(reduced)
+	var hints := CheckBox.new()
+	hints.text = "Show key hints on buttons"
+	hints.button_pressed = _key_hints
+	hints.toggled.connect(func(on: bool) -> void:
+		_save_setting("display", "key_hints", on)
+		_key_hints = on
+		for badge in find_children("KeyBadge", "Label", true, false):
+			badge.visible = on)
+	v.add_child(hints)
+	ring.append(hints)
 	var close := _button("Close", func() -> void: _settings.visible = false)
 	close.size_flags_horizontal = SIZE_SHRINK_CENTER
 	v.add_child(close)
-	_settings.set_meta("first", first)
+	ring.append(close)
+	_focus_ring(ring)
+	_settings.set_meta("first", ring[0])
 	# Closed, focus goes back to where it was (the Settings button).
 	_settings.visibility_changed.connect(func() -> void:
 		var back: Variant = _settings.get_meta("back", null)
 		if not _settings.visible and back is Control and is_instance_valid(back) and back.is_visible_in_tree():
 			back.grab_focus())
+
+## The saved display settings, applied before the table is built.
+func _load_display() -> void:
+	var config := ConfigFile.new()
+	config.load(NetClient.SETTINGS)
+	text_scale = TEXT_SCALE * (LARGE_TEXT if config.get_value("display", "large_text", false) else 1.0)
+	_key_hints = config.get_value("display", "key_hints", true)
+	Effects.reduced = config.get_value("display", "reduced_effects", false)
+	if OS.has_feature("web"):
+		return
+	# The window opens as user://window.cfg says (see _remember_window), so
+	# it is already right; settings saved before that file existed are put
+	# right once, after macOS has finished opening the window full screen.
+	var wanted: bool = config.get_value("display", "fullscreen", true)
+	_was_fullscreen = wanted
+	if _is_fullscreen() != wanted:
+		_remember_window(wanted)
+		if not wanted:
+			await get_tree().create_timer(1.2).timeout
+		_apply_fullscreen(wanted)
+	# Full screen entered or left from the window itself (the green button,
+	# a shortcut) is remembered too. The window has no signal for it.
+	var watch := Timer.new()
+	watch.wait_time = 0.5
+	watch.autostart = true
+	watch.timeout.connect(_remember_fullscreen)
+	add_child(watch)
+
+func _is_fullscreen() -> bool:
+	return get_window().mode in [Window.MODE_FULLSCREEN, Window.MODE_EXCLUSIVE_FULLSCREEN]
+
+func _remember_fullscreen() -> void:
+	var on := _is_fullscreen()
+	if on == _was_fullscreen:
+		return
+	_was_fullscreen = on
+	_save_setting("display", "fullscreen", on)
+	_remember_window(on)
+
+## The window mode for the next launch, read by Godot before it opens the
+## window (project setting application/config/project_settings_override).
+static func _remember_window(fullscreen: bool) -> void:
+	var override := ConfigFile.new()
+	override.set_value("display", "window/size/mode", Window.MODE_FULLSCREEN if fullscreen else Window.MODE_WINDOWED)
+	override.save("user://window.cfg")
+
+func _apply_fullscreen(on: bool) -> void:
+	_was_fullscreen = on
+	_remember_window(on)
+	var window := get_window()
+	window.mode = Window.MODE_FULLSCREEN if on else Window.MODE_WINDOWED
+	if not on:
+		window.size = Vector2i(ProjectSettings.get_setting("display/window/size/window_width_override"),
+			ProjectSettings.get_setting("display/window/size/window_height_override"))
+		window.move_to_center()
+
+## Keeps the keyboard focus among `controls` (a sheet's), so it never slips
+## to the menu behind: Up / Down and Tab go round them, Left / Right stay.
+func _focus_ring(controls: Array[Control]) -> void:
+	var n := controls.size()
+	for i in n:
+		var control := controls[i]
+		var prev := control.get_path_to(controls[(i - 1 + n) % n])
+		var next := control.get_path_to(controls[(i + 1) % n])
+		control.focus_neighbor_top = prev
+		control.focus_previous = prev
+		control.focus_neighbor_bottom = next
+		control.focus_next = next
+		control.focus_neighbor_left = NodePath(".")
+		control.focus_neighbor_right = NodePath(".")
 
 func _show_settings() -> void:
 	_settings.set_meta("back", get_viewport().gui_get_focus_owner())
@@ -857,20 +1060,30 @@ func _build_credits() -> void:
 	var sheet := _menu_sheet("Credits", func() -> void: _credits.visible = false)
 	_credits = sheet[0]
 	var v: VBoxContainer = sheet[1]
-	var text := "[center]"
+	var intro := _rich(17)
+	intro.fit_content = true
+	intro.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
+	intro.text = "[center][color=#e8c27a]Deckhand: Race for Infamy[/color] began as a physical card game.\nThis is its digital edition.[/center]"
+	v.add_child(intro)
+	# Two columns of sections, so the sheet fits the screen even with
+	# larger text.
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 36)
+	grid.add_theme_constant_override("v_separation", 14)
+	v.add_child(grid)
 	for section: Array in CREDITS:
-		text += "[color=#c9a76a][font_size=%d]%s[/font_size][/color]\n" % [_fs(14), section[0].to_upper()]
-		# Non-breaking spaces keep each name on one line.
+		# Non-breaking spaces keep each name on one line (not a long credit
+		# like the typeface's, which may wrap).
 		var names: Array[String] = []
 		for name: String in section[1]:
-			names.append(name.replace(" ", "\u00a0"))
-		text += "%s\n\n" % "  ·  ".join(names)
-	var body := _rich(17)
-	body.fit_content = true
-	body.custom_minimum_size.x = 560
-	body.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
-	body.text = text.strip_edges() + "[/center]"
-	v.add_child(body)
+			names.append(name.replace(" ", "\u00a0") if name.length() <= 32 else name)
+		var body := _rich(17)
+		body.fit_content = true
+		body.custom_minimum_size.x = 440
+		body.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
+		body.text = "[center][color=#c9a76a][font_size=%d]%s[/font_size][/color]\n%s[/center]" % [_fs(14), section[0].to_upper(), "  ·  ".join(names)]
+		grid.add_child(body)
 	# The publisher: its logo on a light plate (it is blue on white) and a
 	# link to the game's page.
 	var publisher := HBoxContainer.new()
@@ -912,6 +1125,53 @@ func _build_credits() -> void:
 	var close := _button("Close", func() -> void: _credits.visible = false)
 	close.size_flags_horizontal = SIZE_SHRINK_CENTER
 	v.add_child(close)
+
+## How to play, in a nutshell: enough to start; the cards' details show on
+## hover, and the rest is learnt at the table.
+func _build_rules() -> void:
+	var sheet := _menu_sheet("How to play", func() -> void: _rules.visible = false)
+	_rules = sheet[0]
+	var v: VBoxContainer = sheet[1]
+	var gold := "[color=#ffd36b][b]%s[/b][/color]"
+	var sections := [
+		["Goal", "Recruit the best pirate crew. After [b]5 rounds[/b], the most %s wins." % (gold % "Victory Points")],
+		["1 · Draft", "Keep one card from your draft hand and pass the rest, the way the wind blows. Repeat until the hands are empty."],
+		["2 · Build", "Choose a card from your hand to build, all at once; or pass for the rest of the round. Built cards join your [b]crew[/b]."],
+		["Paying", "Your crew's production pays first. For the rest, discard cards from your hand:\n1 card = 1 coin %s %s  ·  1 card shown = a resource it produces  ·  2 cards = any resource  ·  Windfall = 2 coins" % [_res("cs", 20), _res("c", 20)]],
+		["Infamy", "Banners raised in your crew %s claim the Infamy cards in the Row: meet a card's banners and it is yours." % _banner("gun", 20)],
+		["Scoring", "Add the VP on your crew and the multipliers (VP per banner). Ties go to the most Tentacles %s." % _img("fx-tentacle", 20)],
+	]
+	var text := ""
+	for section: Array in sections:
+		text += "[color=#e8c27a][font_size=%d]%s[/font_size][/color]\n%s\n\n" % [_fs(13), section[0].to_upper(), section[1]]
+	text += "[color=#c9a76a][i]Hover any card to read what it does.[/i][/color]"
+	var body := _rich(16)
+	body.fit_content = true
+	body.custom_minimum_size.x = 600
+	body.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
+	body.add_theme_font_override("italics_font", load(FONT_REGULAR))
+	body.text = text
+	v.add_child(body)
+	var close := _button("Close", func() -> void: _rules.visible = false)
+	close.size_flags_horizontal = SIZE_SHRINK_CENTER
+	v.add_child(close)
+	_rules.set_meta("close", close)
+	# Its own layer, above the menu's: it also opens from the table.
+	var layer := CanvasLayer.new()
+	layer.layer = 21
+	add_child(layer)
+	var holder := Control.new()
+	holder.set_anchors_preset(PRESET_FULL_RECT)
+	holder.mouse_filter = MOUSE_FILTER_IGNORE
+	holder.theme = _menu.theme
+	layer.add_child(holder)
+	_rules.reparent(holder, false)
+
+func _show_rules() -> void:
+	_rules.visible = true
+	_rules.modulate.a = 0.0
+	_rules.create_tween().tween_property(_rules, "modulate:a", 1.0, 0.2)
+	(_rules.get_meta("close") as Control).grab_focus()
 
 ## Play online: create or join a table, then wait in its lobby for the host
 ## to start. See _render_online() for what shows when.
@@ -1107,6 +1367,9 @@ func _show_credits() -> void:
 func _open_menu() -> void:
 	(_menu.get_meta("opponents") as OptionButton).select(settings.opponents - 1)
 	var in_game := game != null and game.phase != DeckhandGame.Phase.GAME_OVER
+	# Leaving a finished game: back to the title music.
+	if game != null and not in_game:
+		_music.play(Music.INTRO, 1.5)
 	(_menu.get_meta("resume") as Button).visible = in_game
 	# The green button is what you most likely want: back to the game, or a new one.
 	var new_game: Button = _menu.get_meta("new_game")
@@ -1130,8 +1393,9 @@ func _intro() -> void:
 	var tween := create_tween()
 	_music.play(Music.INTRO, 1.5)
 	tween.tween_property(_menu, "modulate", Color.WHITE, 1.0)
-	tween.parallel().tween_property(logo, "modulate:a", 1.0, 0.4)
-	tween.parallel().tween_property(logo, "scale", Vector2.ONE, 0.8).from(Vector2(1.5, 1.5)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	# The logo fades in, settling from a third larger.
+	tween.parallel().tween_property(logo, "modulate:a", 1.0, 0.8).set_delay(0.2)
+	tween.parallel().tween_property(logo, "scale", Vector2.ONE, 1.0).from(Vector2(1.3, 1.3)).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT).set_delay(0.2)
 	tween.tween_property(panel, "modulate:a", 1.0, 0.4)
 
 ## Brings title painting `index` in over the current one and schedules the
@@ -1146,6 +1410,9 @@ func _show_slide(index: int) -> void:
 	_menu.move_child(art, maxi(art.get_index(), shown.get_index()))
 	_slides.assign([art, shown])
 	var tween := art.create_tween()
+	_slide_tween = tween
+	if not _menu.visible:
+		tween.pause()
 	tween.tween_property(art, "modulate:a", 1.0, SLIDE_FADE)
 	var screen: Vector2 = get_viewport_rect().size
 	var image: Vector2 = art.texture.get_size()
@@ -1159,7 +1426,11 @@ func _show_slide(index: int) -> void:
 	else:
 		from.x = 0.0
 		to.x = -overflow.x
-	tween.parallel().tween_property(art, "position", to, SLIDE_TIME + SLIDE_FADE).from(from).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	if Effects.reduced:
+		# Still paintings: only the crossfade moves, so the menu can idle.
+		art.position = (from + to) / 2.0
+	else:
+		tween.parallel().tween_property(art, "position", to, SLIDE_TIME + SLIDE_FADE).from(from).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tween.parallel().tween_callback(_show_slide.bind((index + 1) % MENU_ART.size())).set_delay(SLIDE_TIME)
 
 ## A dark radial vignette over the table and the menu.
@@ -1191,7 +1462,7 @@ func _build_zoom() -> void:
 	_zoom_panel.add_theme_stylebox_override("panel", parchment)
 	# Rounded like the card on top of it, with a thin dark-ink rim.
 	var rounded := ShaderMaterial.new()
-	rounded.shader = ROUNDED_SHADER
+	rounded.shader = Effects.frozen(ROUNDED_SHADER) # no lantern: never animates
 	rounded.set_shader_parameter("radius", ZOOM_CARD.x * 0.055)
 	rounded.set_shader_parameter("rim_color", Color(0.32, 0.2, 0.1, 0.55))
 	_zoom_panel.material = rounded
@@ -1301,7 +1572,7 @@ func _make_theme() -> Theme:
 ## A check box drawn in the menu's colours: a rounded gold-rimmed square,
 ## filled gold with a dark tick when checked.
 static func _check_icon(checked: bool) -> ImageTexture:
-	var size := roundi(22 * TEXT_SCALE)
+	var size := roundi(22 * text_scale)
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
 	var half := size / 2.0
 	var gold := Color(0.92, 0.72, 0.36)
@@ -1343,10 +1614,33 @@ func _panel(color: Color = PANEL_BG) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	style.bg_color = color
-	style.set_corner_radius_all(10)
+	style.set_corner_radius_all(12)
 	style.set_content_margin_all(10)
 	panel.add_theme_stylebox_override("panel", style)
 	return panel
+
+## A thin, discreet gold line between board zones, fading out at both ends.
+func _gold_line(vertical: bool) -> TextureRect:
+	var fade := Gradient.new()
+	fade.offsets = PackedFloat32Array([0.0, 0.2, 0.8, 1.0])
+	fade.colors = PackedColorArray([Color(GOLD, 0.0), Color(GOLD, 0.4), Color(GOLD, 0.4), Color(GOLD, 0.0)])
+	var texture := GradientTexture2D.new()
+	texture.gradient = fade
+	texture.width = 1 if vertical else 256
+	texture.height = 256 if vertical else 1
+	if vertical:
+		texture.fill_to = Vector2(0, 1)
+	var line := TextureRect.new()
+	line.texture = texture
+	line.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	line.stretch_mode = TextureRect.STRETCH_SCALE
+	line.custom_minimum_size = Vector2(1, 0) if vertical else Vector2(0, 1)
+	line.mouse_filter = MOUSE_FILTER_IGNORE
+	return line
+
+## Gives a panel from _panel() roomier content margins.
+func _pad(panel: PanelContainer, margin: float) -> void:
+	(panel.get_theme_stylebox("panel") as StyleBoxFlat).set_content_margin_all(margin)
 
 ## Dark-stained wood with rounded corners, for dialogs and the action bar.
 func _wood_panel(tint: Color = Color(0.5, 0.36, 0.24), shadow: bool = false) -> PanelContainer:
@@ -1371,7 +1665,7 @@ func _wood_panel(tint: Color = Color(0.5, 0.36, 0.24), shadow: bool = false) -> 
 		behind.mouse_filter = MOUSE_FILTER_IGNORE
 		panel.add_child(behind)
 	var rounded := ShaderMaterial.new()
-	rounded.shader = ROUNDED_SHADER
+	rounded.shader = Effects.frozen(ROUNDED_SHADER) # no lantern: never animates
 	panel.material = rounded
 	panel.resized.connect(func() -> void: rounded.set_shader_parameter("size", panel.size))
 	return panel
@@ -1485,7 +1779,7 @@ func _clear(node: Node) -> void:
 		child.queue_free()
 
 static func _fs(size: int) -> int:
-	return roundi(size * TEXT_SCALE)
+	return roundi(size * text_scale)
 
 static func _img(name: String, size: int = 20) -> String:
 	return "[img=%d]%s%s.png[/img]" % [roundi(size * ICON_SCALE), ICONS, name]
@@ -1570,11 +1864,22 @@ func _render_row() -> void:
 			v.add_child(empty)
 			continue
 		if not slot.revealed:
-			var back := _card(slot.cards[-1], ROW_CARD, false)
-			if slot.cards.size() > 1:
-				back.set_caption("×%d" % slot.cards.size())
-			back.size_flags_horizontal = SIZE_SHRINK_CENTER
-			v.add_child(back)
+			# Face down: stacked cards show, each a little up and to the right.
+			var count: int = slot.cards.size()
+			var step := Vector2(5, -5)
+			var back_size := (ROW_CARD * (1.0 - step.x * (count - 1) / ROW_CARD.y)).round()
+			var pile := Control.new()
+			pile.custom_minimum_size = ROW_CARD
+			pile.size_flags_horizontal = SIZE_SHRINK_CENTER
+			v.add_child(pile)
+			for k in count:
+				var back := _card(slot.cards[k], back_size, false)
+				back.position = Vector2((ROW_CARD.x - back_size.x) / 2.0, ROW_CARD.y - back_size.y) + step * k - Vector2(step.x * (count - 1) / 2.0, 0)
+				if count > 1:
+					if k == count - 1:
+						back.set_caption("×%d" % count)
+					back.add_child(_card_rim(back_size))
+				pile.add_child(back)
 			continue
 		# Cards revealed together: a cascade in the slot's usual height. The
 		# last revealed is in front; each one behind shows its banner strip
@@ -1595,6 +1900,77 @@ func _render_row() -> void:
 				view.mark = CardView.Mark.CLAIMABLE
 			view.set_requirement(_banners_met(_seat, id))
 			stack.add_child(view)
+
+## A faint gold rim around a face-down card, so each card of a stack shows.
+func _card_rim(card_size: Vector2) -> Panel:
+	var rim := Panel.new()
+	var style := StyleBoxFlat.new()
+	style.draw_center = false
+	style.border_color = Color(GOLD, 0.45)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(int(card_size.x * 0.06))
+	rim.add_theme_stylebox_override("panel", style)
+	rim.set_anchors_preset(PRESET_FULL_RECT)
+	rim.mouse_filter = MOUSE_FILTER_IGNORE
+	return rim
+
+## A deck is shuffled: its top half is cut off and riffled back in a few
+## times. A new Supply first gathers the discard pile into it.
+func _shuffle_pile(deck: String) -> void:
+	# After the cards that caused it have moved.
+	await get_tree().create_timer(0.35).timeout
+	var pile: CardView = _pile_views.get(deck)
+	if not is_instance_valid(pile) or not pile.is_inside_tree():
+		return
+	var at := CardMotion.pose_of(pile, false)
+	var layer := Control.new()
+	layer.mouse_filter = MOUSE_FILTER_IGNORE
+	_motion.add_child(layer)
+	var id := 1 if deck == "infamy" else 13
+	var start := 0.0
+	var discard: CardView = _pile_views.get("discard")
+	if deck == "supply" and is_instance_valid(discard) and discard.is_inside_tree():
+		# The discards slide over to the empty Supply.
+		var from := CardMotion.pose_of(discard, false)
+		for k in 4:
+			var ghost := CardView.make(id, at.size, false)
+			ghost.interactive = false
+			ghost.mouse_filter = MOUSE_FILTER_IGNORE
+			ghost.position = from.center - at.size / 2.0
+			layer.add_child(ghost)
+			var slide := ghost.create_tween()
+			slide.tween_interval(k * 0.06)
+			slide.tween_property(ghost, "position", at.center - at.size / 2.0, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			slide.tween_callback(ghost.queue_free)
+		start = 0.5
+	var halves: Array[CardView] = []
+	for side in [-1.0, 1.0]:
+		var half := CardView.make(id, at.size, false)
+		half.interactive = false
+		half.mouse_filter = MOUSE_FILTER_IGNORE
+		half.position = at.center - at.size / 2.0
+		half.pivot_offset = at.size / 2.0
+		half.modulate.a = 0.0
+		layer.add_child(half)
+		halves.append(half)
+	var tween := layer.create_tween()
+	tween.tween_interval(start)
+	tween.tween_callback(func() -> void:
+		_sfx.play("card_deal", -10.0)
+		for half in halves:
+			half.modulate.a = 1.0)
+	# Riffles: the halves part left and right, then slide back together,
+	# the one in front changing each time.
+	for k in 3:
+		for i in 2:
+			var side := -1.0 if i == 0 else 1.0
+			tween.parallel().tween_property(halves[i], "position:x", at.center.x - at.size.x / 2.0 + side * at.size.x * 0.42, 0.11).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			tween.parallel().tween_property(halves[i], "rotation_degrees", side * 7.0, 0.11)
+		tween.tween_callback(func() -> void: layer.move_child(halves[k % 2], -1))
+		for i in 2:
+			tween.parallel().tween_property(halves[i], "position:x", at.center.x - at.size.x / 2.0, 0.12).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+			tween.parallel().tween_property(halves[i], "rotation_degrees", 0.0, 0.12)
+	tween.tween_callback(layer.queue_free)
 
 ## For each banner printed on Infamy card `infamy_id`, whether player `p`
 ## has it raised (a second Skull needs two Skulls, and so on).
@@ -1774,16 +2150,9 @@ func _render_crew() -> void:
 	var titles: Array[String] = []
 	for group: String in CREW_GROUPS:
 		if groups.has(group):
-			var ids: Array = groups[group]
-			# Identical producers side by side (stable: build order otherwise).
-			var order := func(id: int) -> int:
-				var tokens := CardDB.production_tokens(id)
-				return RESOURCE_ORDER.find(tokens[0]) if not tokens.is_empty() else RESOURCE_ORDER.size()
-			var keyed: Array = []
-			for i in ids.size():
-				keyed.append([order.call(ids[i]), i, ids[i]])
-			keyed.sort()
-			stacks.append(keyed.map(func(k: Array) -> int: return k[2]))
+			# In build order: the newest card lies on top, at the bottom,
+			# fully visible.
+			stacks.append(groups[group])
 			titles.append(CREW_GROUPS[group])
 	var area: Vector2 = (_crew_columns.get_parent() as Control).size
 	var probe := _label("Basic", 13)
@@ -1868,8 +2237,8 @@ static func _crew_columns_needed(stacks: Array, depth: int) -> int:
 ## The left column: your VP, then banners, production and symbols, each
 ## kind of icon once with its count.
 func _render_ledger() -> void:
-	var offset := Vector2(_ledger_vp.size.x / 2.0 - 40.0, _ledger_vp.size.y * 0.45)
-	var fresh := _show_gains(_seat, _ledger_vp, "[center][color=#ffd36b][font_size=%d][b]{vp}[/b][/font_size] VP[/color][/center]" % _fs(32), offset)
+	var offset := Vector2(_vp_text.size.x / 2.0 - 40.0, _vp_text.size.y * 0.45)
+	var fresh := _show_gains(_seat, _vp_text, "[center][font_size=%d][b]{vp}[/b][/font_size]\n[font_size=%d]VP[/font_size][/center]" % [_fs(24), _fs(10)], offset)
 	var banners := game.raised_banners(_seat)
 	var cells: Array[String] = []
 	for b in CardDB.BANNERS:
@@ -2153,8 +2522,11 @@ func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary
 		rates.fit_content = true
 		rates.autowrap_mode = TextServer.AUTOWRAP_OFF
 		rates.add_theme_color_override("default_color", Color(1, 0.92, 0.8))
-		rates.text = "[color=#c9a76a]Discard:[/color]  1 card → %s or %s or its resource   ·   2 cards → any   ·   Windfall → %s%s" % [
-			_res("cs", 14), _res("c", 14), _res("cs", 14), _res("cs", 14)]
+		# One rule per line: on a single line it ran wider than the crew area.
+		rates.text = "\n".join([
+			"[color=#c9a76a]Discard 1 card →[/color] %s or %s or its resource" % [_res("cs", 14), _res("c", 14)],
+			"[color=#c9a76a]Discard 2 cards →[/color] any resource",
+			"[color=#c9a76a]Windfall →[/color] %s%s" % [_res("cs", 14), _res("cs", 14)]])
 		_pay_body.add_child(rates)
 	if _pay_windfall:
 		var dest := OptionButton.new()
@@ -2232,6 +2604,18 @@ func _show_overlay(title: String, subtitle: String) -> HBoxContainer:
 	_overlay_body.add_child(cards)
 	return cards
 
+## Puts `button` at the top right of the choice, level with its title.
+func _overlay_corner(button: Button) -> void:
+	var title: Control = _overlay_body.get_child(0)
+	var header := HBoxContainer.new()
+	_overlay_body.add_child(header)
+	_overlay_body.move_child(header, 0)
+	title.reparent(header)
+	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	button.size_flags_vertical = SIZE_SHRINK_CENTER
+	header.add_child(button)
+	_queue_key_badges()
+
 func _overlay_buttons(specs: Array) -> void:
 	if specs.is_empty():
 		return # no empty row: it would pad the bottom
@@ -2296,10 +2680,14 @@ func _render_choice_overlay(decision: Dictionary) -> void:
 			for id: int in decision.cards:
 				_overlay_card(cards, id, func() -> void: _submit({"card": id}))
 		"telescope_slot":
-			var cards := _show_overlay("Telescope", "Choose a face-down Row card to look at.")
+			var cards := _show_overlay("Telescope", "Choose a face-down Row slot to look at.")
 			for slot: int in decision.slots:
-				var view := _overlay_card(cards, game.row[slot].cards[-1], func() -> void: _submit({"slot": slot}), false)
-				view.set_caption("Round %d" % (slot + 1))
+				var stack: Array = game.row[slot].cards
+				var view := _overlay_card(cards, stack[-1], func() -> void: _submit({"slot": slot}), false)
+				view.set_caption("Round %d" % (slot + 1) if stack.size() == 1 else "Round %d · %d cards" % [slot + 1, stack.size()])
+		"telescope_card":
+			var cards := _show_overlay("Telescope", "Round %d's slot holds %d cards: choose the one to look at." % [decision.slot + 1, decision.cards.size()])
+			_telescope_fan(cards, decision.cards)
 		"telescope_swap":
 			var cards := _show_overlay("Telescope", "Left: the face-down card for round %d. Right: the top of the Infamy deck. Swap them?" % (decision.slot + 1))
 			_card_into(cards, decision.row_card).set_caption("In the Row")
@@ -2315,6 +2703,39 @@ func _render_choice_overlay(decision: Dictionary) -> void:
 			for q: int in decision.targets:
 				specs.append(["%s (%d cards)" % [game.players[q].name, game.players[q].hand.size()], func() -> void: _submit({"target": q})])
 			_overlay_buttons(specs)
+
+## The cards of a stacked Row slot, fanned out (the Row's own card on the
+## left), each with who put it there underneath.
+func _telescope_fan(parent: HBoxContainer, ids: Array) -> void:
+	var n := ids.size()
+	var step := OVERLAY_CARD.x * 0.72
+	var fan := Control.new()
+	fan.custom_minimum_size = Vector2(OVERLAY_CARD.x + step * (n - 1) + 40.0, OVERLAY_CARD.y + 46.0)
+	parent.add_child(fan)
+	for k in n:
+		var id: int = ids[k]
+		var spread := k - (n - 1) / 2.0
+		var view := _overlay_card(fan, id, func() -> void: _submit({"index": k}), false)
+		view.position = Vector2(20.0 + step * k, 6.0 + absf(spread) * 8.0)
+		view.pivot_offset = Vector2(OVERLAY_CARD.x / 2.0, OVERLAY_CARD.y)
+		view.rotation_degrees = spread * 6.0
+		var who := _rich(14)
+		who.fit_content = true
+		who.mouse_filter = MOUSE_FILTER_IGNORE
+		who.custom_minimum_size.x = step + 8.0
+		who.position = Vector2(20.0 + step * k + (OVERLAY_CARD.x - who.custom_minimum_size.x) / 2.0, OVERLAY_CARD.y + 18.0)
+		who.text = "[center]%s[/center]" % _row_origin(id)
+		fan.add_child(who)
+
+## Who put a face-down Row card there, as shown under the Telescope's fan.
+func _row_origin(id: int) -> String:
+	var origin: Dictionary = game.row_origins.get(id, {})
+	if origin.is_empty():
+		return "Row card"
+	var p: int = origin.player
+	if origin.via == "swap":
+		return "Swapped in by you" if p == _seat else "Swapped in by %s" % _who(p)
+	return "Your Windfall" if p == _seat else "%s's Windfall" % _who(p)
 
 ## Puts the pending choice aside (or brings it back) without changing it.
 func _toggle_overlay() -> void:
@@ -2341,44 +2762,50 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 	var pl: Dictionary = game.players[_seat]
 	var direction := "to your left ↻" if game.wind() == 1 else "to your right ↺"
 	var sub := "Pick one card to keep; the rest pass %s. Picked so far: %d." % [direction, pl.picks.size()]
-	if decision.must_discard:
-		sub = "[color=#ffd36b]Compass:[/color] click the card to keep, then a card to discard."
-	elif decision.can_redraw:
-		sub += "\nNot happy with this hand? You may redraw it all, once."
+	var discards: int = decision.discards
+	if discards > 0:
+		sub = "[color=#ffd36b]Compass:[/color] click the card to keep, then %s to discard." % ("a card" if discards == 1 else "%d cards" % discards)
+		if decision.can_use_compass:
+			sub += " Or use another Compass first."
 	var cards := _show_overlay("Draft — round %d" % game.round_index, sub)
+	if decision.can_redraw:
+		var redraw := _button("Redraw all", func() -> void: _submit({"redraw": true}))
+		redraw.tooltip_text = "Not happy with this hand? Discard it and draw a new one, once."
+		_overlay_corner(redraw)
 	var pick: int = _selected[0] if _selected.size() > 0 else -1
-	var drop: int = _selected[1] if _selected.size() > 1 else -1
+	var drops := _selected.slice(1)
 	for id: int in pl.draft_hand:
 		var view := _overlay_card(cards, id, func() -> void: _on_draft_card(id, decision), true, _overlay_size(pl.draft_hand.size()))
 		if id == pick:
 			view.mark = CardView.Mark.SELECTED
 			view.set_caption("Keep")
-		elif id == drop:
+		elif drops.has(id):
 			view.mark = CardView.Mark.PAYMENT
 			view.set_caption("Discard")
 	var specs: Array = []
-	if decision.can_redraw:
-		specs.append(["Redraw all", func() -> void: _submit({"redraw": true})])
 	if decision.can_use_compass:
 		specs.append(["Use Compass (%d left)" % game.compasses_available(_seat), func() -> void: _submit({"use_compass": true})])
-	if decision.must_discard:
-		specs.append(["Confirm", func() -> void: _submit({"pick": pick, "discard": drop}), pick >= 0 and drop >= 0, true])
+	if discards > 0:
+		specs.append(["Confirm", func() -> void: _submit({"pick": pick, "discards": drops}), pick >= 0 and drops.size() == discards, true])
 	_overlay_buttons(specs)
 
+## Without a Compass drawn, a click picks. With one or more: the first card
+## clicked is kept, the next ones (one per Compass) discarded; click again to
+## unmark.
 func _on_draft_card(id: int, decision: Dictionary) -> void:
-	if not decision.must_discard:
+	if decision.discards == 0:
 		_submit({"pick": id})
 		return
 	if _selected.is_empty():
 		_selected.append(id)
 	elif _selected[0] == id:
 		_selected.clear()
-	elif _selected.size() > 1 and _selected[1] == id:
-		_selected.resize(1)
-	elif _selected.size() == 1:
+	elif _selected.has(id):
+		_selected.erase(id)
+	elif _selected.size() <= decision.discards:
 		_selected.append(id)
 	else:
-		_selected[1] = id
+		_selected[-1] = id # all chosen: swap the last discard
 	_render_overlay()
 
 func _render_game_over() -> void:
@@ -2388,7 +2815,15 @@ func _render_game_over() -> void:
 	if _hold_choices or _band_up():
 		get_tree().create_timer(0.3).timeout.connect(_render_game_over)
 		return
-	_build_finale()
+	if _finale_cued:
+		return
+	# The end piece starts a moment before the result comes up (it fades in
+	# itself); then silence, until the menu brings the title music back.
+	_finale_cued = true
+	_music.cut_to(Music.END, 0.8)
+	await get_tree().create_timer(1.0).timeout
+	if game != null and game.phase == DeckhandGame.Phase.GAME_OVER and not is_instance_valid(_finale):
+		_build_finale()
 
 func _show_finale() -> void:
 	if is_instance_valid(_finale):
@@ -2428,6 +2863,8 @@ func _build_finale() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_outline_color", Color(0.12, 0.05, 0.02))
 	title.add_theme_constant_override("outline_size", 12)
+	if won:
+		_shine(title, 2.4)
 	column.add_child(title)
 	var top: Dictionary = game.final_scores[0]
 	var who := "You" if winners.size() == 1 and won else " & ".join(winners.map(func(p: int) -> String: return "you" if p == _seat else _who(p)))
@@ -2438,7 +2875,7 @@ func _build_finale() -> void:
 	column.add_child(sub)
 
 	# Your rank, stamped in wax.
-	var seal := _rank_seal(DeckhandGame.rank_for(game.score(_seat)))
+	var seal := _rank_seal(DeckhandGame.rank_for(game.score(_seat)), won)
 	seal.size_flags_horizontal = SIZE_SHRINK_CENTER
 	column.add_child(seal)
 
@@ -2516,41 +2953,99 @@ func _build_finale() -> void:
 	stamp.tween_interval(0.9)
 	stamp.tween_property(seal, "modulate:a", 1.0, 0.1)
 	stamp.parallel().tween_property(seal, "scale", Vector2.ONE, 0.25).from(Vector2(2.4, 2.4)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	stamp.tween_callback(func() -> void: _sfx.play("card_place"))
-	stamp.tween_property(seal, "rotation_degrees", -6.0, 0.08)
-	# A winner's celebration: gold dust bursting around the title.
+	# It lands heavily: squashes a little, and the whole table shakes.
+	stamp.tween_callback(func() -> void:
+		_sfx.play("card_place")
+		seal.pivot_offset = Vector2(seal.custom_minimum_size.x / 2.0, seal.custom_minimum_size.y))
+	stamp.tween_property(seal, "scale", Vector2(1.08, 0.9), 0.05).set_ease(Tween.EASE_OUT)
+	stamp.tween_property(seal, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+	get_tree().create_timer(1.15).timeout.connect(func() -> void: _shake(center, 9.0, 0.5))
+	# A winner's celebration: fireworks over the finale, around the title.
 	if won:
-		for k in 10:
-			get_tree().create_timer(0.6 + k * 0.28).timeout.connect(func() -> void:
+		var tints := [Color(1.0, 0.55, 0.15), Color(1.0, 0.3, 0.2), Color(1.0, 0.8, 0.3), Color(0.95, 0.95, 1.0)]
+		for k in 16:
+			get_tree().create_timer(0.6 + k * 0.32 + randf() * 0.15).timeout.connect(func() -> void:
 				if not is_instance_valid(_finale) or not _finale.visible:
 					return
 				var screen := get_viewport_rect().size
-				var at := Vector2(randf_range(0.2, 0.8) * screen.x, randf_range(0.1, 0.4) * screen.y)
-				_motion.burst(at, Vector2(120, 60), 50))
+				var side := -1.0 if k % 2 == 0 else 1.0
+				var at := Vector2((0.5 + side * randf_range(0.12, 0.38)) * screen.x, randf_range(0.08, 0.45) * screen.y)
+				CardMotion.firework(root, at, tints[k % tints.size()])
+				_sfx.play("coin", -14.0, 0.3))
 
-## A round wax seal with your rank on it.
-func _rank_seal(rank: String) -> Control:
-	var seal := PanelContainer.new()
-	var wax := StyleBoxFlat.new()
-	wax.bg_color = Color(0.62, 0.1, 0.1)
-	wax.border_color = Color(0.42, 0.05, 0.05)
-	wax.set_border_width_all(5)
-	wax.set_corner_radius_all(80)
-	wax.shadow_color = Color(0, 0, 0, 0.5)
-	wax.shadow_size = 10
-	wax.shadow_offset = Vector2(0, 4)
-	seal.add_theme_stylebox_override("panel", wax)
-	seal.custom_minimum_size = Vector2(160, 160)
+## Shakes `node` as if something heavy just landed: `strength` pixels at
+## first, settling over `seconds`.
+func _shake(node: Control, strength: float, seconds: float) -> void:
+	if not is_instance_valid(node):
+		return
+	var shake := node.create_tween()
+	shake.tween_method(func(t: float) -> void:
+		var fade := (1.0 - t) * (1.0 - t)
+		node.position = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * strength * fade, 0.0, 1.0, seconds)
+	shake.tween_callback(func() -> void: node.position = Vector2.ZERO)
+
+## The wax seal with your rank on it; a winner's glows, rays turning behind.
+func _rank_seal(rank: String, won: bool) -> Control:
+	var seal := _wax_seal(Vector2(200, 242))
+	_shine(seal.get_child(0), 3.0, 0.0)
+	if won:
+		var rays := ColorRect.new()
+		rays.material = ShaderMaterial.new()
+		Effects.use(rays.material, RAYS_SHADER)
+		rays.mouse_filter = MOUSE_FILTER_IGNORE
+		rays.show_behind_parent = true
+		rays.size = Vector2(520, 520)
+		rays.position = seal.custom_minimum_size * Vector2(0.5, 0.4) - rays.size / 2.0
+		seal.add_child(rays)
+		seal.move_child(rays, 0)
+	var text := _seal_text(seal)
+	text.add_theme_font_size_override("normal_font_size", _fs(19))
+	text.add_theme_font_size_override("bold_font_size", _fs(19))
+	text.text = "[center][font_size=%d]YOUR RANK[/font_size]\n[b]%s[/b][/center]" % [_fs(12), rank]
+	return seal
+
+## The VP seal art at `seal_size`.
+func _wax_seal(seal_size: Vector2) -> Control:
+	var seal := Control.new()
+	seal.custom_minimum_size = seal_size
+	seal.mouse_filter = MOUSE_FILTER_IGNORE
+	var art := TextureRect.new()
+	art.texture = VP_SEAL
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	art.set_anchors_preset(PRESET_FULL_RECT)
+	art.mouse_filter = MOUSE_FILTER_IGNORE
+	seal.add_child(art)
+	return seal
+
+## Light text pressed into the seal's disc (above its ribbons).
+func _seal_text(seal: Control) -> RichTextLabel:
 	var text := _rich(16)
 	text.fit_content = true
-	text.add_theme_color_override("default_color", Color(1, 0.88, 0.7))
-	text.add_theme_color_override("font_outline_color", Color(0.3, 0.02, 0.02))
-	text.add_theme_constant_override("outline_size", 4)
-	text.text = "[center][font_size=%d]YOUR RANK[/font_size]\n[b]%s[/b][/center]" % [_fs(11), rank]
-	text.size_flags_vertical = SIZE_SHRINK_CENTER
-	text.custom_minimum_size.x = 140
+	text.scroll_active = false
+	text.mouse_filter = MOUSE_FILTER_IGNORE
+	text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	text.add_theme_color_override("default_color", Color(1, 0.9, 0.72))
+	text.add_theme_color_override("font_outline_color", Color(0.22, 0.02, 0.02))
+	text.add_theme_constant_override("outline_size", 6)
+	text.anchor_left = 0.14
+	text.anchor_right = 0.86
+	text.anchor_top = 0.1
+	text.anchor_bottom = 0.68
 	seal.add_child(text)
-	return seal
+	return text
+
+## Gives `node` the gold gleam (and, with `gild`, gold letters).
+func _shine(node: CanvasItem, period: float, gild: float = 1.0) -> void:
+	var material := ShaderMaterial.new()
+	Effects.use(material, SHINE_SHADER)
+	material.set_shader_parameter("period", period)
+	material.set_shader_parameter("gild", gild)
+	node.material = material
+	var control := node as Control
+	var fit := func() -> void: material.set_shader_parameter("size", control.size)
+	control.resized.connect(fit)
+	fit.call()
 
 func _sheet_cell(text: String, font_size: int, centered: bool = true) -> RichTextLabel:
 	var cell := _rich(font_size)
@@ -2869,7 +3364,7 @@ func _spotlight_claim(id: int, from: Dictionary, claimer: int) -> void:
 	_in_spotlight[id] = true
 	var who := "You claim it!" if claimer == _seat else "%s claims it!" % _who(claimer)
 	var caption := "[center][font_size=%d][b][color=#ffd36b]%s[/color][/b][/font_size][/center]" % [_fs(30), who]
-	_spotlight(id, from, caption, func(pose: Dictionary) -> void:
+	_spotlight(id, from, caption, claimer, func(pose: Dictionary) -> void:
 		_in_spotlight.erase(id)
 		# The card's place in its new crew, as laid out now.
 		var target: CardView = null
@@ -2896,16 +3391,63 @@ func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 		names.append(_who(p))
 	var tied := " and ".join(names) if names.size() < 3 else ", ".join(names.slice(0, -1)) + " and " + names[-1]
 	var caption := "[center][font_size=%d][b][color=#ff8a70]Contested![/color][/b][/font_size]\n%s tie for it: nobody claims it.[/center]" % [_fs(32), tied]
-	_spotlight(id, from, caption, func(pose: Dictionary) -> void:
+	_spotlight(id, from, caption, -1, func(pose: Dictionary) -> void:
 		_sfx.play("burn")
 		_motion.burn(id, pose))
 
 ## Shows Infamy card `id` in the middle of the dimmed table: it flies there
 ## from pose `from`, turning face up, with `caption` under it; after a moment
 ## `finish` is called with its pose (to send it on) and the table clears.
-func _spotlight(id: int, from: Dictionary, caption_text: String, finish: Callable) -> void:
+## Cards with the same `key` (the claimer; -1 when contested) arriving
+## together share the table; other keys get their own turn, one after another.
+func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable) -> void:
+	# A card claimed as it is revealed first turns over where it lies, and
+	# stays there a moment, so everyone sees what came up.
+	var revealed: CardView = null
+	var shown_at := Time.get_ticks_msec()
+	if not from.face_up:
+		var up := from.duplicate()
+		up.face_up = true
+		revealed = CardView.make(id, from.size, true)
+		revealed.interactive = false
+		revealed.mouse_filter = MOUSE_FILTER_IGNORE
+		revealed.position = from.center - from.size / 2.0
+		revealed.rotation = from.rotation
+		_motion.add_child(revealed)
+		_sfx.play("card_flip", -4.0)
+		_motion.fly(id, from, up, {"target": revealed, "duration": 0.45, "arc": 0.0, "lift": 0.12})
+		from = up
+	var now := Engine.get_process_frames()
+	_spot_groups = _spot_groups.filter(func(g: Dictionary) -> bool: return g.frame == now)
+	var group: Dictionary = {}
+	for g: Dictionary in _spot_groups:
+		if g.key == key:
+			group = g
+	if group.is_empty():
+		group = {"key": key, "frame": now, "ids": [], "after": _spot_last, "done": false}
+		_spot_groups.append(group)
+		_spot_last = group
+	var ids: Array = group.ids
+	var slot := ids.size()
+	ids.append(id)
+	# The group is complete once this frame is over.
+	await get_tree().process_frame
+	while not group.after.is_empty() and not group.after.done:
+		await _spotlight_cleared
+		if not is_inside_tree():
+			return
+	group.after = {}
 	while _band_up():
 		await _title_layer.tree_exited
+	if not is_inside_tree():
+		return # the table was closed meanwhile
+	if revealed != null:
+		var held := (Time.get_ticks_msec() - shown_at) / 1000.0
+		if held < 1.2:
+			await get_tree().create_timer(1.2 - held).timeout
+		revealed.queue_free()
+	var gap := 0.9 # between two cards leaving
+	var later := (ids.size() - 1 - slot) * gap # the others still to leave after this one
 	var screen := get_viewport_rect().size
 	var dim_layer := CanvasLayer.new()
 	dim_layer.layer = 4 # under the flying card (layer 5)
@@ -2915,12 +3457,14 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, finish: Callabl
 	dim.set_anchors_preset(PRESET_FULL_RECT)
 	dim.mouse_filter = MOUSE_FILTER_IGNORE
 	dim.modulate.a = 0.0
+	dim.visible = slot == 0 # one dim for the whole group
 	dim_layer.add_child(dim)
 	var layer := CanvasLayer.new()
 	layer.layer = 6
 	add_child(layer)
 	var card_size := Vector2(240, 326)
-	var center := Vector2(screen.x / 2.0, screen.y / 2.0 - 50.0)
+	var spacing := card_size.x + 70.0
+	var center := Vector2(screen.x / 2.0 + (slot - (ids.size() - 1) / 2.0) * spacing, screen.y / 2.0 - 50.0)
 	var view := CardView.make(id, card_size)
 	view.interactive = false
 	view.mouse_filter = MOUSE_FILTER_IGNORE
@@ -2930,31 +3474,37 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, finish: Callabl
 	var caption := _rich(18)
 	caption.fit_content = true
 	caption.mouse_filter = MOUSE_FILTER_IGNORE
-	caption.custom_minimum_size.x = 640
+	var caption_width := 640.0 if ids.size() == 1 else spacing - 10.0
+	caption.custom_minimum_size.x = caption_width
 	caption.add_theme_color_override("font_outline_color", Color(0.08, 0.04, 0.02))
 	caption.add_theme_constant_override("outline_size", 6)
 	caption.text = caption_text
-	caption.position = Vector2(center.x - 320.0, center.y + card_size.y / 2.0 + 18.0)
+	caption.position = Vector2(center.x - caption_width / 2.0, center.y + card_size.y / 2.0 + 18.0)
 	caption.modulate.a = 0.0
 	layer.add_child(caption)
 
-	_sfx.play("reveal", -4.0)
+	if slot == 0:
+		_sfx.play("reveal", -4.0)
 	var to := {"center": center, "size": card_size, "rotation": 0.0, "face_up": true}
 	_motion.fly(id, from, to, {"target": view, "duration": 0.85, "lift": 0.25, "arc": 70.0})
 	var tween := create_tween()
 	tween.tween_property(dim, "modulate:a", 1.0, 0.4)
 	tween.tween_interval(0.5)
 	tween.tween_property(caption, "modulate:a", 1.0, 0.3)
-	tween.tween_interval(1.7)
+	tween.tween_interval(1.7 + slot * gap)
 	tween.tween_callback(func() -> void:
 		var pose := CardMotion.pose_of(view, true)
 		view.visible = false
 		finish.call(pose))
 	tween.tween_property(caption, "modulate:a", 0.0, 0.4)
-	tween.parallel().tween_property(dim, "modulate:a", 0.0, 0.6)
+	# The dim lifts once the last card of the group has left.
+	tween.parallel().tween_property(dim, "modulate:a", 0.0, 0.6).set_delay(later)
 	tween.tween_callback(func() -> void:
 		layer.queue_free()
 		dim_layer.queue_free()
+		if slot == 0: # the group's last to clear (its dim waits for the others)
+			group.done = true
+			_spotlight_cleared.emit()
 		_spotlights -= 1
 		if _spotlights == 0 and not _band_up():
 			_hold_choices = false
@@ -3030,6 +3580,8 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_sfx.play("card_deal", volume - 4.0)
 		"telescope":
 			_sfx.play("telescope", volume)
+		"shuffle":
+			_shuffle_pile(info.deck)
 		"hook":
 			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
 		"battle_announce":
@@ -3147,6 +3699,8 @@ func _input(event: InputEvent) -> void:
 	if key == KEY_ESCAPE:
 		if _credits.visible:
 			_credits.visible = false
+		elif _rules.visible:
+			_rules.visible = false
 		elif _online_panel.visible:
 			_close_online()
 		elif _settings.visible:
@@ -3157,6 +3711,8 @@ func _input(event: InputEvent) -> void:
 			_open_menu()
 		get_viewport().set_input_as_handled()
 		return
+	if _rules.visible:
+		return # its Close button has the focus
 	if _menu.visible:
 		_menu_key(key)
 		return
@@ -3181,7 +3737,7 @@ func _input(event: InputEvent) -> void:
 
 func _menu_key(key: Key) -> void:
 	# A sheet over the menu may be typed in (the online name and code).
-	if _credits.visible or _online_panel.visible or _settings.visible:
+	if _credits.visible or _rules.visible or _online_panel.visible or _settings.visible:
 		return
 	var focus := get_viewport().gui_get_focus_owner()
 	var in_menu := focus != null and (_menu.get_meta("panel") as Control).is_ancestor_of(focus)
@@ -3353,6 +3909,7 @@ func _badge(button: Button, text: String) -> void:
 		badge.add_theme_stylebox_override("normal", cap)
 		button.add_child(badge)
 	badge.text = text
+	badge.visible = _key_hints
 	# Pinned to the top-right corner, overhanging it a little.
 	var cap_size := badge.get_combined_minimum_size()
 	badge.anchor_left = 1.0

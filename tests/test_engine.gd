@@ -11,6 +11,8 @@ func _init() -> void:
 	test_full_games()
 	test_lockstep()
 	test_battles()
+	test_compasses()
+	test_telescope_stack()
 	print("\n%s" % ("ALL TESTS PASSED" if failures == 0 else "%d FAILURE(S)" % failures))
 	quit(1 if failures > 0 else 0)
 
@@ -151,6 +153,53 @@ func test_battles() -> void:
 			game.submit(q, DeckhandBot.decide(game, q))
 	check(stats.resolved > 0, "battles happen in simulated games (%d)" % stats.resolved)
 	check(bad.is_empty(), "battles resolve only on the announcer's build, among builders: %s" % [bad.slice(0, 3)])
+
+## Two Compasses on the same pick: draw, draw, then keep 1 and discard 2.
+func test_compasses() -> void:
+	var game := DeckhandGame.new()
+	game.setup([{"name": "A", "bot": false}, {"name": "B", "bot": true}], 77, {})
+	game.start()
+	var compasses := CardDB.ids_of_kind("supply").filter(func(id: int) -> bool: return CardDB.get_card(id).compasses > 0)
+	for id: int in compasses.slice(0, 2):
+		game.supply.erase(id)
+		game.discard_pile.erase(id)
+		game.players[0].crew.append(id)
+	game._ask_draft_pick(0) # asked again, now with the Compasses
+	var start: int = game.players[0].draft_hand.size()
+	check(game.submit(0, {"use_compass": true}) == "", "first Compass")
+	game.submit(1, DeckhandBot.decide(game, 1))
+	check(game.pending[0].discards == 1 and game.pending[0].can_use_compass, "after one Compass: 1 discard, another Compass offered")
+	check(game.submit(0, {"use_compass": true}) == "", "second Compass on the same pick")
+	check(game.pending[0].discards == 2 and not game.pending[0].can_use_compass, "after two Compasses: 2 discards, none left")
+	var hand: Array = game.players[0].draft_hand
+	check(hand.size() == start + 2, "each Compass drew a card")
+	check(game.submit(0, {"pick": hand[0], "discards": [hand[1]]}) != "", "one discard is not enough")
+	var discarded: Array = [hand[1], hand[2]]
+	check(game.submit(0, {"pick": hand[0], "discards": discarded}) == "", "keep 1, discard 2")
+	check(game.discard_pile.has(discarded[0]) and game.discard_pile.has(discarded[1]), "both discards are in the discard pile")
+	check(game.players[0].compass_draws == 0, "the next pick starts without Compass draws")
+
+## A Telescope can look at any card of a stacked slot, and swap that one.
+func test_telescope_stack() -> void:
+	var game := DeckhandGame.new()
+	game.setup([{"name": "A", "bot": false}, {"name": "B", "bot": true}], 31, {})
+	game.start()
+	var slot: int = game.unrevealed_slots()[-1]
+	var windfall: int = game.infamy_deck.pop_back()
+	game.row[slot].cards.append(windfall)
+	var original: int = game.row[slot].cards[0]
+	game._start_telescope(0, -1)
+	if game.pending[0].type == "telescope_slot":
+		check(game.submit(0, {"slot": slot}) == "", "the stacked slot")
+	var decision: Dictionary = game.pending[0]
+	check(decision.type == "telescope_card" and decision.cards.size() == 2, "then which of its 2 cards")
+	check(game.submit(0, {"index": 2}) != "", "no third card in the stack")
+	check(game.submit(0, {"index": 0}) == "", "the card under the Windfall")
+	check(game.pending[0].row_card == original, "it is the one looked at")
+	var deck_card: int = game.pending[0].deck_card
+	game.submit(0, {"swap": true})
+	check(game.row[slot].cards == [deck_card, windfall], "the swap replaces that card only")
+	check(game.infamy_deck.has(original), "the swapped card is in the Infamy deck")
 
 func check_conservation(game: DeckhandGame, seed_value: int) -> void:
 	var seen := {}

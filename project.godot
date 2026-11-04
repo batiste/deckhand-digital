@@ -17,6 +17,9 @@ config/features=PackedStringArray("4.7", "GL Compatibility")
 boot_splash/bg_color=Color(0, 0, 0, 1)
 boot_splash/show_image=false
 config/icon="res://icon.png"
+config/project_settings_override="user://window.cfg"
+run/max_fps=60
+run/low_processor_mode=true
 
 [audio]
 
@@ -43,10 +46,9 @@ timers/tooltip_delay_sec=0.3
 
 [rendering]
 
+renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
 textures/default_filters/anisotropic_filtering_level=4
 textures/canvas_textures/default_texture_filter=3
-anti_aliasing/quality/msaa_2d=3
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
-anti_aliasing/quality/screen_space_aa=1

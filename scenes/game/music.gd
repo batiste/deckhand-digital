@@ -40,7 +40,13 @@ const INTRO_GAME := {
 	"handover": 54.623, "jump": 43.640, "crossfade": 0.5,
 	"loops": 2, "exit": INTRO_EXIT, "then": "game",
 }
-const TRACKS := {"intro": INTRO, "game": GAME, "intro_game": INTRO_GAME}
+## The end of a game: a short piece, once, then silence (`hold`) until the
+## title music comes back with the menu.
+const END := {
+	"name": "end", "path": "res://assets/end.mp3", "db": -8.0,
+	"once": true, "rest": 0.0, "hold": true,
+}
+const TRACKS := {"intro": INTRO, "game": GAME, "intro_game": INTRO_GAME, "end": END}
 ## Tracks that take turns during a game: starting another game keeps them going.
 const GAME_CYCLE: Array[String] = ["game", "intro_game"]
 
@@ -82,6 +88,28 @@ func play(next: Dictionary, fade_in: float) -> void:
 		return
 	_switch(next, fade_in)
 
+## Starts `next` from the top at once, at its level (it brings its own
+## fade-in), while what played fades out over `fade_out` seconds.
+func cut_to(next: Dictionary, fade_out: float) -> void:
+	if _mix:
+		_mix.kill()
+	var player: AudioStreamPlayer = _players[1] if _current == _players[0] else _players[0]
+	var old: Array[AudioStreamPlayer] = []
+	for p in _players:
+		if p.playing and p != player:
+			old.append(p)
+	player.stream = _streams[next.path]
+	player.volume_db = next.db
+	player.play(0.0)
+	_current = player
+	track = next
+	_passes = 0
+	_state = "playing"
+	for p in old:
+		var fade := create_tween()
+		fade.tween_property(p, "volume_db", SILENT_DB, fade_out).set_trans(Tween.TRANS_SINE)
+		fade.tween_callback(p.stop)
+
 ## Fades everything out.
 func stop(seconds: float = 1.2) -> void:
 	track = {}
@@ -113,6 +141,8 @@ func _process(_delta: float) -> void:
 		return
 	match _state:
 		"resting":
+			if track.get("hold", false):
+				return # silent until something else is played
 			if Time.get_ticks_msec() >= _rest_until:
 				if track.has("then"):
 					_switch(TRACKS[track.then], RESTART_FADE)

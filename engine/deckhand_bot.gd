@@ -45,6 +45,9 @@ static func decide(game: DeckhandGame, p: int) -> Dictionary:
 			return {"card": _best(game, p, decision.cards)}
 		"telescope_slot":
 			return {"slot": decision.slots[0]}
+		"telescope_card":
+			# Another pirate's Windfall is the one worth knowing about.
+			return {"index": decision.cards.size() - 1}
 		"telescope_swap":
 			return {"swap": _claim_distance(game, p, decision.deck_card) < _claim_distance(game, p, decision.row_card)}
 		"telescope_place":
@@ -65,10 +68,7 @@ static func _decide_random(game: DeckhandGame, p: int, decision: Dictionary) -> 
 		"draft_pick":
 			var hand: Array = pl.draft_hand
 			var pick: int = hand[rng.randi_range(0, hand.size() - 1)]
-			var out := {"pick": pick}
-			if decision.must_discard:
-				out.discard = hand.filter(func(id: int) -> bool: return id != pick)[0]
-			return out
+			return {"pick": pick, "discards": hand.filter(func(id: int) -> bool: return id != pick).slice(0, decision.discards)}
 		"hand_limit":
 			var cards: Array = pl.hand.duplicate()
 			for i in range(cards.size() - 1, 0, -1):
@@ -84,7 +84,9 @@ static func _decide_random(game: DeckhandGame, p: int, decision: Dictionary) -> 
 		"choose_one":
 			return {"card": decision.cards[rng.randi_range(0, decision.cards.size() - 1)]}
 		"telescope_slot":
-			return {"slot": decision.slots[0]}
+			return {"slot": decision.slots[rng.randi_range(0, decision.slots.size() - 1)]}
+		"telescope_card":
+			return {"index": rng.randi_range(0, decision.cards.size() - 1)}
 	return {"redraw": false, "swap": false, "place": false}
 
 # --- Valuation --------------------------------------------------------------
@@ -288,7 +290,8 @@ static func _draft_hand_quality(game: DeckhandGame, p: int) -> float:
 static func _draft_pick(game: DeckhandGame, p: int, decision: Dictionary) -> Dictionary:
 	if decision.can_redraw and _draft_hand_quality(game, p) < 4.5:
 		return {"redraw": true}
-	if decision.can_use_compass and game.players[p].draft_hand.size() > 1:
+	# One Compass per pick: the bots spread them over the draft.
+	if decision.can_use_compass and decision.discards == 0 and game.players[p].draft_hand.size() > 1:
 		return {"use_compass": true}
 	var hand: Array = game.players[p].draft_hand
 	var scored: Array = []
@@ -299,10 +302,9 @@ static func _draft_pick(game: DeckhandGame, p: int, decision: Dictionary) -> Dic
 			burden = _cost_burden(game, p, id) * card_worth(game, p) * param(p, "burden")
 		scored.append([card_value(game, p, id) - burden, id])
 	scored.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
-	var out := {"pick": scored[0][1]}
-	if decision.must_discard:
-		out.discard = scored[-1][1]
-	return out
+	# The weakest cards go, as many as the Compasses drew.
+	var discards := scored.slice(scored.size() - decision.discards).map(func(entry: Array) -> int: return entry[1])
+	return {"pick": scored[0][1], "discards": discards}
 
 static func _build(game: DeckhandGame, p: int) -> Dictionary:
 	var pl: Dictionary = game.players[p]
@@ -324,6 +326,12 @@ static func _build(game: DeckhandGame, p: int) -> Dictionary:
 		if net > best_net:
 			best_net = net
 			best = {"card": id, "discards": plan.discards, "windfall": plan.windfall, "windfall_dest": DeckhandGame.WINDFALL_DECK}
+	# Now and then, a spent Windfall goes face down on a later Row slot
+	# (rounds 3 to 5) rather than back into the Infamy deck.
+	if best.get("windfall", false) and game.bot_rng.randf() < 0.45:
+		var later := game.unrevealed_slots().filter(func(slot: int) -> bool: return slot >= 2)
+		if not later.is_empty():
+			best.windfall_dest = later[game.bot_rng.randi_range(0, later.size() - 1)]
 	# Cards beyond the hand limit are lost anyway, so build more eagerly then.
 	var threshold := 0.2 if game.hand_size(p) <= DeckhandGame.HAND_LIMIT else -0.8
 	if game.round_index == DeckhandGame.ROUNDS:

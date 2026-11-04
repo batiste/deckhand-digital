@@ -149,6 +149,49 @@ func burst(center: Vector2, extent: Vector2, amount: int = 40) -> void:
 	dust.emitting = true
 	dust.finished.connect(dust.queue_free)
 
+## A firework of glowing sparks bursting from `center`, in `parent` (so it can
+## be drawn above another layer). `tint` colours the sparks as they cool.
+static func firework(parent: Node, center: Vector2, tint: Color) -> void:
+	var glow := CanvasItemMaterial.new()
+	glow.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	var sparks := CPUParticles2D.new()
+	sparks.position = center
+	sparks.material = glow
+	sparks.one_shot = true
+	sparks.explosiveness = 0.95
+	sparks.amount = 90
+	sparks.lifetime = 1.6
+	sparks.direction = Vector2.UP
+	sparks.spread = 180.0
+	sparks.gravity = Vector2(0.0, 110.0)
+	sparks.initial_velocity_min = 160.0
+	sparks.initial_velocity_max = 340.0
+	sparks.damping_min = 90.0
+	sparks.damping_max = 160.0
+	sparks.scale_amount_min = 2.5
+	sparks.scale_amount_max = 5.0
+	var ramp := Gradient.new()
+	ramp.set_color(0, Color(1.0, 1.0, 0.92, 1.0))
+	ramp.add_point(0.25, Color(1.0, 0.85, 0.4, 1.0))
+	ramp.add_point(0.6, Color(tint, 0.8))
+	ramp.set_color(1, Color(tint.darkened(0.4), 0.0))
+	sparks.color_ramp = ramp
+	parent.add_child(sparks)
+	sparks.emitting = true
+	sparks.finished.connect(sparks.queue_free)
+	# The flash at its heart.
+	var flash := sparks.duplicate() as CPUParticles2D
+	flash.amount = 12
+	flash.lifetime = 0.35
+	flash.initial_velocity_min = 0.0
+	flash.initial_velocity_max = 30.0
+	flash.scale_amount_min = 14.0
+	flash.scale_amount_max = 22.0
+	flash.gravity = Vector2.ZERO
+	parent.add_child(flash)
+	flash.emitting = true
+	flash.finished.connect(flash.queue_free)
+
 ## Ends every flight at once (e.g. when a new game starts).
 func settle() -> void:
 	for id: int in _flights.keys():
