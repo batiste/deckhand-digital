@@ -685,7 +685,8 @@ func _task_effect(task: Dictionary) -> void:
 		"draw-1", "draw-2":
 			var n := _draw_into_hand(p, 1 if task.effect == "draw-1" else 2)
 			_log("%s draws %d card%s (%s)." % [_name(p), n, "" if n == 1 else "s", CardDB.title(task.source)])
-			event.emit("draw", {"player": p})
+			var hand: Array[int] = players[p].hand
+			event.emit("draw", {"player": p, "source": task.source, "cards": hand.slice(hand.size() - n)})
 		"3-choices":
 			var drawn: Array[int] = []
 			for _i in range(3):

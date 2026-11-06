@@ -188,6 +188,10 @@ signal _stage_moved
 var _claimed := {} # Infamy card id -> claiming player, until its flight starts
 var _gifts := {} # card id -> true: given back after a Hook, flies off glowing
 var _band_ok: Button = null # the OK of the band on screen, if it has one
+var _band_dismiss := Callable() # closes that band
+var _band_since := 0 # when it showed (msec): a click on the hand closes it, after a grace
+var _landing: Array = [] # your cards on their way to the crew: [{id, draws}]
+var _band_holds := 0 # bands (shown or queued) that hold the choices
 var _shown := {} # player -> {vp, banners} last displayed, to animate gains
 var _fonts: Array[Font] = [] # keeps the fallback-patched fonts loaded
 
@@ -294,9 +298,11 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_in_spotlight.clear()
 	_spot_groups = []
 	_sent_build = {}
+	_landing.clear()
 	_stage_now = _stage_next # whatever was queued is dropped
 	_stage_moved.emit()
 	_hold_choices = false
+	_band_holds = 0
 	game.start()
 
 func _process(delta: float) -> void:
@@ -2303,6 +2309,12 @@ func _hand_entries() -> Array:
 		entries.append({"id": id})
 	for id in pl.picks:
 		entries.append({"id": id, "picked": true})
+	# Built, but not in the crew yet (players before you in priority order
+	# are still adding theirs): it stays in hand until its turn comes, then
+	# flies over (else it would vanish, then appear in the crew from nowhere).
+	var built: int = pl.built_this_step
+	if built >= 0 and not pl.crew.has(built) and not pl.hand.has(built):
+		entries.append({"id": built, "building": true})
 	return entries
 
 func _render_hand() -> void:
@@ -2319,6 +2331,7 @@ func _render_hand() -> void:
 		var id: int = entry.id
 		var view := _card(id, HAND_CARD)
 		view.set_meta("windfall", entry.get("windfall", false))
+		view.set_meta("building", entry.get("building", false))
 		if entry.get("windfall", false):
 			view.set_caption("Windfall (2 coins)")
 		elif entry.get("picked", false):
@@ -2334,7 +2347,10 @@ func _render_hand() -> void:
 			if _hovered_hand == v:
 				_hovered_hand = null
 			_layout_hand())
-		if type == "" and not _sent_build.is_empty():
+		if entry.get("building", false):
+			view.mark = CardView.Mark.SELECTED
+			view.set_caption("Building")
+		elif type == "" and not _sent_build.is_empty():
 			# Sent, waiting for the others: the build keeps its marks.
 			if entry.get("windfall", false):
 				view.mark = CardView.Mark.PAYMENT if _sent_build.windfall else CardView.Mark.NONE
@@ -3322,11 +3338,17 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 ##   footer: BBCode on the OK button's line, left of it.
 ##   on_close: called once the band has gone.
 ##   read_time: how long it stays (with ok; default BAND_READ_TIME).
+##   after_landing: waits for your cards on their way to the crew first.
 func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool, opts: Dictionary = {}) -> void:
 	var ok: bool = opts.get("ok", false)
 	var read_time: float = opts.get("read_time", BAND_READ_TIME)
 	if hold:
+		_band_holds += 1
 		_hold_choices = true
+	if opts.get("after_landing", false):
+		await _landings_done() # before the ticket (see _hook_ceremony)
+		if not is_inside_tree():
+			return
 	var ticket := _stage_take()
 	await _stage_wait(ticket)
 	if not is_inside_tree():
@@ -3341,8 +3363,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 		if on_close.is_valid() and is_inside_tree():
 			on_close.call()
 		if hold:
-			_hold_choices = _spotlights > 0
-			_queue_refresh())
+			_band_holds -= 1
+		_release_hold())
 	var band := PanelContainer.new()
 	band.mouse_filter = MOUSE_FILTER_IGNORE
 	var style := StyleBoxFlat.new()
@@ -3418,6 +3440,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	button.size_flags_horizontal = SIZE_SHRINK_CENTER
 	row.add_child(button)
 	_band_ok = button
+	_band_dismiss = dismiss
+	_band_since = Time.get_ticks_msec() + int(delay * 1000.0)
 	_badge(button, "O") # O, Enter or Space (see _input)
 	# The time left: a thin bar along the button's foot, inside its rim and
 	# following its rounded corners, running down.
@@ -3463,6 +3487,19 @@ func _band_text(bbcode: String) -> RichTextLabel:
 	text.add_theme_color_override("default_color", Color(0.95, 0.88, 0.72))
 	return text
 
+## A click on a hand card while a band with an OK is up: in its first
+## moment the click is ignored (it was surely not meant for the new band);
+## after that it closes the band and goes through. Whether it goes through.
+func _hand_click_passes() -> bool:
+	if not is_instance_valid(_band_ok) or not _band_ok.is_visible_in_tree() or not _band_dismiss.is_valid():
+		return true
+	if Time.get_ticks_msec() - _band_since < BAND_CLICK_GRACE_MS:
+		return false
+	_band_dismiss.call()
+	return true
+
+const BAND_CLICK_GRACE_MS := 1000
+
 ## How long a band with an OK button stays up, unless dismissed.
 const BAND_READ_TIME := 5.0
 
@@ -3476,7 +3513,7 @@ func _band_up() -> bool:
 func _battle_announced(p: int) -> void:
 	var when := "your next build" if p == _seat else "%s's next build" % _who(p)
 	var text := "On [b]%s[/b], whoever builds the best card draws a card." % when
-	_band("You announce a Battle!" if p == _seat else "A Battle is announced!", Color(1.0, 0.55, 0.4), text, 0.0, false, {"ok": true})
+	_band("You announce a Battle!" if p == _seat else "A Battle is announced!", Color(1.0, 0.55, 0.4), text, 0.0, false, {"ok": true, "after_landing": true})
 
 ## A Battle is fought: each builder's score, and who wins.
 func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, details: Dictionary = {}) -> void:
@@ -3502,33 +3539,61 @@ func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, detail
 		drawn = hand.slice(max(0, hand.size() - count))
 		for id: int in drawn:
 			_in_spotlight[id] = true
-	_band(title, Color(1.0, 0.55, 0.4), "", 0.0, not drawn.is_empty(), {
-		"ok": true, "extra": _battle_table(winner, scores, details), "footer": outcome,
+	_band(title, Color(1.0, 0.55, 0.4), "", 0.0, false, {
+		"ok": true, "after_landing": true, "extra": _battle_table(winner, scores, details), "footer": outcome,
 		"read_time": BAND_READ_TIME * 1.3, # a table to read
 		"on_close": func() -> void: _deal_from_supply(drawn),
 	})
 
-## Cards already in your hand, hidden meanwhile, dealt in from the Supply.
+## Cards already in your hand, hidden meanwhile, dealt in from the Supply
+## (the refresh deals a hand card it had not seen from its deck).
 func _deal_from_supply(ids: Array) -> void:
-	if ids.is_empty():
+	if ids.is_empty() or not is_inside_tree():
 		return
 	for id: int in ids:
 		_in_spotlight.erase(id)
-	await get_tree().process_frame # laid out by the refresh the band's end queued
-	if not is_inside_tree():
-		return
-	var from: Dictionary = _opp_pose(_seat)
-	if _pile_views.has("supply") and is_instance_valid(_pile_views.supply):
-		from = CardMotion.pose_of(_pile_views.supply, false)
-	var k := 0
-	for id: int in ids:
-		var target := _hand_view(id)
-		if target == null:
-			continue
-		_motion.fly(id, from, CardMotion.pose_of(target, true), {"target": target, "zone": "hand", "delay": k * 0.12})
-		k += 1
-	if k > 0:
-		_sfx.play("card_deal", -2.0)
+	_queue_refresh()
+	_sfx.play("card_deal", -2.0)
+
+# --- Landing: a card's effects wait for it to reach your crew ---------------
+
+## A card joins your crew: until it has landed there (flown from your hand,
+## or shown mid-table first when claimed), its effects wait: choices are held,
+## cards it draws stay hidden, and Hook and Battle moments queue behind it.
+func _await_landing(id: int) -> void:
+	var gate := {"id": id, "draws": []}
+	_landing.append(gate)
+	_spotlights += 1
+	_hold_choices = true
+	# The refresh lays the card out, and its flight starts a frame later.
+	for _i in range(3):
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	var waited := 0.0
+	while not _card_settled(id) and waited < LANDING_TIMEOUT:
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+		waited += get_process_delta_time()
+	if not _landing.has(gate):
+		return # a new game started meanwhile
+	_landing.erase(gate)
+	_deal_from_supply(gate.draws)
+	_spotlights -= 1
+	_release_hold()
+
+const LANDING_TIMEOUT := 8.0 # never hold the game on a lost animation
+
+## Whether card `id` is at rest on the table (not waiting to be shown,
+## shown mid-table, or flying).
+func _card_settled(id: int) -> bool:
+	return not (_claimed.has(id) or _lost.has(id) or _in_spotlight.has(id) or _motion.is_flying(id))
+
+## Waits until none of your cards is still landing.
+func _landings_done() -> void:
+	while not _landing.is_empty() and is_inside_tree():
+		await get_tree().process_frame
 
 ## The Battle's scores, one row per pirate: the card built, its value, the
 ## bonus from Battle symbols and the total (the winner's row in gold).
@@ -3710,9 +3775,7 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 		if slot == 0: # the group's last to clear (its dim waits for the others)
 			_stage_leave(group.ticket)
 		_spotlights -= 1
-		if _spotlights == 0 and not _band_up():
-			_hold_choices = false
-			_queue_refresh())
+		_release_hold())
 
 ## Spotlight keys for Hooks, apart from the claimers' (player indices) and
 ## contested cards (-1).
@@ -3744,18 +3807,27 @@ func _hook_ceremony(id: int, thief: int, victim: int) -> void:
 	_in_spotlight[id] = true
 	_spotlights += 1
 	_hold_choices = true
+	if thief == _seat:
+		# Your Hook card reaches your crew first. (Before taking a ticket:
+		# a claimed card's spotlight, which the landing waits on, takes its
+		# own later.)
+		await _landings_done()
+		if not is_inside_tree():
+			return
 	# Each Hook gets the table to itself, after whatever came before it.
 	var ticket := _stage_take()
 	if tugged != null:
 		await _stage_wait(ticket)
 		if not is_instance_valid(tugged) or not is_inside_tree():
 			_stage_leave(ticket)
+			_hook_abandoned(id)
 			return
 		# Yanked out of the hand first; then slowly hauled to the middle.
 		_hook_tug(tugged)
 		await get_tree().create_timer(HOOK_TUG_TIME).timeout
 		if not is_instance_valid(tugged) or not is_inside_tree():
 			_stage_leave(ticket)
+			_hook_abandoned(id)
 			return
 		from = CardMotion.pose_of(tugged, true)
 	var finish := func(pose: Dictionary) -> void:
@@ -3774,6 +3846,20 @@ func _hook_ceremony(id: int, thief: int, victim: int) -> void:
 	_spotlight(id, from, caption, HOOK_SPOT_KEY + ticket, finish, false, tugged, 1.3 if tugged != null else 0.85, ticket)
 
 const HOOK_TUG_TIME := 0.9
+
+## A Hook ceremony that could not be shown: lets go of what it held.
+func _hook_abandoned(id: int) -> void:
+	if not is_inside_tree():
+		return
+	_in_spotlight.erase(id)
+	_spotlights -= 1
+	_release_hold()
+
+## Choices wait while a card is shown mid-table or lands in your crew, and
+## while a holding band is shown or queued; recomputed as each one ends.
+func _release_hold() -> void:
+	_hold_choices = _spotlights > 0 or _band_holds > 0
+	_queue_refresh()
 
 ## A copy of the hooked card where it lay in your hand (it stays until the
 ## spotlight takes over).
@@ -3923,8 +4009,16 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"crew":
 			if not CardDB.is_infamy(info.card):
 				_sfx.play("card_place", volume)
+			if p == _seat:
+				_await_landing(info.card)
 		"draw":
-			_sfx.play("card_deal", volume - 4.0)
+			if p == _seat and info.has("cards") and not _landing.is_empty():
+				# Drawn by a card still landing: dealt once it has.
+				for id: int in info.cards:
+					_in_spotlight[id] = true
+				_landing[-1].draws.append_array(info.cards)
+			else:
+				_sfx.play("card_deal", volume - 4.0)
 		"telescope":
 			_sfx.play("telescope", volume)
 		"shuffle":
@@ -3975,7 +4069,9 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 
 func _on_hand_clicked(view: CardView) -> void:
 	var decision: Variant = game.pending.get(_seat)
-	if decision == null:
+	if decision == null or view.get_meta("building", false) or _in_spotlight.has(view.card_id):
+		return # nothing to choose, or the card is not on show yet
+	if not _hand_click_passes():
 		return
 	_sfx.play("card_flip", -6.0)
 	var is_windfall: bool = view.get_meta("windfall", false)
