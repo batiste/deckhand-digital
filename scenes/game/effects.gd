@@ -21,18 +21,22 @@ static var _live: Array[WeakRef] = [] # materials following the setting
 
 ## Gives `material` the shader `base` on the ambient clock (frozen while
 ## effects are reduced), and keeps it following the setting (see set_reduced).
-static func use(material: ShaderMaterial, base: Shader) -> void:
+## `smooth` skips the ambient clock and keeps the real TIME, at the full frame
+## rate: for the few effects where 10 Hz shows (the menu logo's gleam), and
+## only where the screen is light enough to redraw every frame.
+static func use(material: ShaderMaterial, base: Shader, smooth: bool = false) -> void:
 	if not material.has_meta("effects_base"):
 		_live.append(weakref(material)) # once: a card's shimmer comes and goes
 	material.set_meta("effects_base", base)
-	material.shader = shader(base)
+	material.set_meta("effects_smooth", smooth)
+	material.shader = _shader_for(material)
 	material.set_shader_parameter(CLOCK, _clock)
 
 ## Switches the setting, swapping the shaders already on screen.
 static func set_reduced(on: bool) -> void:
 	reduced = on
 	for material in _materials():
-		material.shader = shader(material.get_meta("effects_base"))
+		material.shader = _shader_for(material)
 		material.set_shader_parameter(CLOCK, _clock)
 
 ## Advances the ambient clock; called every frame (GameTable._process).
@@ -55,6 +59,13 @@ static func tick(delta: float) -> bool:
 ## `base` on the ambient clock, or frozen with "Reduced effects" on.
 static func shader(base: Shader) -> Shader:
 	return frozen(base) if reduced else clocked(base)
+
+## The shader `material` should have now, given its meta and the setting.
+static func _shader_for(material: ShaderMaterial) -> Shader:
+	var base: Shader = material.get_meta("effects_base")
+	if material.get_meta("effects_smooth", false) and not reduced:
+		return base
+	return shader(base)
 
 ## `base` with TIME read from the ambient clock uniform.
 static func clocked(base: Shader) -> Shader:

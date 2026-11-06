@@ -813,7 +813,7 @@ func _resolve_hook(p: int, target: int, _source: int) -> void:
 	their.erase(stolen)
 	players[p].hand.append(stolen)
 	_log("%s hooks a card from %s." % [_name(p), _name(target)])
-	event.emit("hook", {"player": p, "target": target})
+	event.emit("hook", {"player": p, "target": target, "card": stolen})
 	if symbol_count(p, "hooks") < 3:
 		_ask(p, {"type": "hook_give", "target": target, "stolen": stolen})
 
@@ -824,6 +824,7 @@ func _answer_hook_give(p: int, decision: Dictionary, action: Dictionary) -> void
 	players[p].hand.erase(action.card)
 	players[decision.target].hand.append(action.card)
 	_log("%s gives a card back to %s." % [_name(p), _name(decision.target)])
+	event.emit("hook_give", {"player": p, "target": decision.target, "card": action.card})
 
 ## Each participant scores the card they just built (with multipliers),
 ## plus 1 per Battle symbol in their crew. The best score draws.
@@ -833,11 +834,15 @@ func _task_battle(task: Dictionary) -> void:
 	var leaders: Array[int] = []
 	var parts: Array[String] = []
 	var scores := {}
+	var details := {} # player -> {card, value, bonus}: how each score was made
 	for q: int in task.participants:
 		var built: int = players[q].built_this_step
-		var s := card_score(q, built) + symbol_count(q, "battles")
+		var value := card_score(q, built)
+		var bonus := symbol_count(q, "battles")
+		var s := value + bonus
 		parts.append("%s %d" % [_name(q), s])
 		scores[q] = s
+		details[q] = {"card": built, "value": value, "bonus": bonus}
 		if s > best:
 			best = s
 			leaders = [q]
@@ -847,11 +852,11 @@ func _task_battle(task: Dictionary) -> void:
 	_log("Battle for %s: %s." % [_name(p), ", ".join(parts)])
 	if winner < 0:
 		_log("The Battle is a draw.")
-		event.emit("battle", {"player": p, "winner": -1, "scores": scores, "count": task.count})
+		event.emit("battle", {"player": p, "winner": -1, "scores": scores, "details": details, "count": task.count})
 		return
 	var n := _draw_into_hand(winner, task.count)
 	_log("%s wins the Battle and draws %d." % [_name(winner), n])
-	event.emit("battle", {"player": p, "winner": winner, "scores": scores, "count": n})
+	event.emit("battle", {"player": p, "winner": winner, "scores": scores, "details": details, "count": n})
 
 ## Tentacles break ties; returns -1 if still tied.
 func _break_tie(tied: Array[int]) -> int:

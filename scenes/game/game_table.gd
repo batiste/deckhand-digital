@@ -101,6 +101,10 @@ var _decision: Variant = null # the human decision the input state belongs to
 
 # Input state for the current human decision.
 var _build_card := -1
+var _give_card := -1 # Hook: the card picked to give back, until confirmed
+# Your build, once sent, while the others choose: {card, pay, windfall}.
+# Keeps its marks in the hand (the decision, and its input state, are gone).
+var _sent_build := {}
 var _pay: Array[int] = []
 var _pay_windfall := false
 var _windfall_dest := DeckhandGame.WINDFALL_DECK
@@ -175,9 +179,15 @@ var _in_spotlight := {} # card id -> true while shown mid-table (its table copy 
 # shown side by side: {key, frame, ids, after, done}. Each group waits for
 # the one before it (`after`) to clear the table.
 var _spot_groups: Array = []
-var _spot_last: Dictionary = {}
-signal _spotlight_cleared
+# The stage: table moments (bands, spotlights, a Hook's card coming back)
+# play one at a time, in the order their events came. Each takes a ticket
+# when its event fires, waits for its turn, and leaves when done.
+var _stage_next := 0 # the next ticket to hand out
+var _stage_now := 0 # the ticket on stage
+signal _stage_moved
 var _claimed := {} # Infamy card id -> claiming player, until its flight starts
+var _gifts := {} # card id -> true: given back after a Hook, flies off glowing
+var _band_ok: Button = null # the OK of the band on screen, if it has one
 var _shown := {} # player -> {vp, banners} last displayed, to animate gains
 var _fonts: Array[Font] = [] # keeps the fallback-patched fonts loaded
 
@@ -283,7 +293,9 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_spotlights = 0
 	_in_spotlight.clear()
 	_spot_groups = []
-	_spot_last = {}
+	_sent_build = {}
+	_stage_now = _stage_next # whatever was queued is dropped
+	_stage_moved.emit()
 	_hold_choices = false
 	game.start()
 
@@ -320,6 +332,9 @@ func _process(delta: float) -> void:
 			game.submit(p, {"pass": true})
 
 func _submit(action: Dictionary) -> void:
+	var current: Variant = game.pending.get(_seat)
+	if current != null and current.type == "build" and not action.get("pass", false):
+		_sent_build = {"card": action.card, "pay": action.get("discards", []).duplicate(), "windfall": action.get("windfall", false)}
 	if not _online:
 		var error := game.submit(_seat, action)
 		if not error.is_empty():
@@ -730,7 +745,7 @@ func _build_menu() -> void:
 	logo.custom_minimum_size = Vector2(640, 302)
 	logo.resized.connect(func() -> void: logo.pivot_offset = logo.size / 2.0)
 	var gleam := ShaderMaterial.new()
-	Effects.use(gleam, preload("res://scenes/game/logo.gdshader"))
+	Effects.use(gleam, preload("res://scenes/game/logo.gdshader"), true)
 	logo.material = gleam
 	column.add_child(logo)
 	var panel := _wood_panel()
@@ -1807,6 +1822,8 @@ func _refresh() -> void:
 		return
 	var decision: Variant = game.pending.get(_seat)
 	if not is_same(decision, _decision):
+		if decision != null:
+			_sent_build = {} # a new choice: the last build is over
 		_decision = decision
 		_reset_input()
 	# Hovered cards may be rebuilt below without an exit event. (If the same
@@ -1826,6 +1843,7 @@ func _refresh() -> void:
 
 func _reset_input() -> void:
 	_build_card = -1
+	_give_card = -1
 	_pay.clear()
 	_pay_windfall = false
 	_windfall_dest = DeckhandGame.WINDFALL_DECK
@@ -2316,7 +2334,16 @@ func _render_hand() -> void:
 			if _hovered_hand == v:
 				_hovered_hand = null
 			_layout_hand())
-		if type == "build":
+		if type == "" and not _sent_build.is_empty():
+			# Sent, waiting for the others: the build keeps its marks.
+			if entry.get("windfall", false):
+				view.mark = CardView.Mark.PAYMENT if _sent_build.windfall else CardView.Mark.NONE
+			elif id == _sent_build.card:
+				view.mark = CardView.Mark.SELECTED
+				view.set_caption("Building")
+			elif _sent_build.pay.has(id):
+				view.mark = CardView.Mark.PAYMENT
+		elif type == "build":
 			if entry.get("windfall", false):
 				view.mark = CardView.Mark.PAYMENT if _pay_windfall else CardView.Mark.NONE
 			elif id == _build_card:
@@ -2329,6 +2356,9 @@ func _render_hand() -> void:
 		elif type == "hook_give":
 			if entry.get("windfall", false):
 				view.mark = CardView.Mark.DISABLED
+			elif id == _give_card:
+				view.mark = CardView.Mark.SELECTED
+				view.set_caption("Give back")
 			elif id == decision.stolen:
 				view.mark = CardView.Mark.HIGHLIGHT
 				view.set_caption("Stolen")
@@ -2426,6 +2456,11 @@ func _render_action() -> void:
 		_action_text.text = "[color=#8a96a6]The other pirates are deciding…[/color]"
 		_set_buttons([])
 		return
+	if _spotlights > 0:
+		# A card is shown mid-table: its caption has the floor.
+		_action_text.text = ""
+		_set_buttons([])
+		return
 	match decision.type:
 		"build":
 			_render_build_action()
@@ -2435,9 +2470,17 @@ func _render_action() -> void:
 				DeckhandGame.HAND_LIMIT, count, decision.count]
 			_set_buttons([["Discard", _confirm_hand_limit, count == decision.count]])
 		"hook_give":
-			_action_text.text = "[b]Hook[/b] — you stole [b]%s[/b]. With fewer than 3 Hooks you must give a card back: click a card in your hand to give it to %s." % [
-				CardDB.title(decision.stolen), _who(decision.target)]
-			_set_buttons([])
+			if _hold_choices:
+				_action_text.text = ""
+				_set_buttons([])
+			elif _give_card < 0:
+				_action_text.text = "[b]Hook[/b] — you stole [b]%s[/b] from %s. With fewer than 3 Hooks you must give one card back: pick it in your hand." % [
+					CardDB.title(decision.stolen), _who(decision.target)]
+				_set_buttons([])
+			else:
+				_action_text.text = "[b]Hook[/b] — give [b]%s[/b] back to %s?  [color=#8a96a6](click another card to change)[/color]" % [
+					CardDB.title(_give_card), _who(decision.target)]
+				_set_buttons([["Give to %s »" % game.players[decision.target].name, func() -> void: _submit({"card": _give_card})]])
 		_:
 			if _hold_choices:
 				_action_text.text = ""
@@ -2864,7 +2907,7 @@ func _build_finale() -> void:
 	title.add_theme_color_override("font_outline_color", Color(0.12, 0.05, 0.02))
 	title.add_theme_constant_override("outline_size", 12)
 	if won:
-		_shine(title, 2.4)
+		_shine(title, 2.4, 1.0, true)
 	column.add_child(title)
 	var top: Dictionary = game.final_scores[0]
 	var who := "You" if winners.size() == 1 and won else " & ".join(winners.map(func(p: int) -> String: return "you" if p == _seat else _who(p)))
@@ -2987,11 +3030,11 @@ func _shake(node: Control, strength: float, seconds: float) -> void:
 ## The wax seal with your rank on it; a winner's glows, rays turning behind.
 func _rank_seal(rank: String, won: bool) -> Control:
 	var seal := _wax_seal(Vector2(200, 242))
-	_shine(seal.get_child(0), 3.0, 0.0)
+	_shine(seal.get_child(0), 3.0, 0.0, true)
 	if won:
 		var rays := ColorRect.new()
 		rays.material = ShaderMaterial.new()
-		Effects.use(rays.material, RAYS_SHADER)
+		Effects.use(rays.material, RAYS_SHADER, true)
 		rays.mouse_filter = MOUSE_FILTER_IGNORE
 		rays.show_behind_parent = true
 		rays.size = Vector2(520, 520)
@@ -3035,10 +3078,11 @@ func _seal_text(seal: Control) -> RichTextLabel:
 	seal.add_child(text)
 	return text
 
-## Gives `node` the gold gleam (and, with `gild`, gold letters).
-func _shine(node: CanvasItem, period: float, gild: float = 1.0) -> void:
+## Gives `node` the gold gleam (and, with `gild`, gold letters); `smooth`
+## runs it at the full frame rate (see Effects.use).
+func _shine(node: CanvasItem, period: float, gild: float = 1.0, smooth: bool = false) -> void:
 	var material := ShaderMaterial.new()
-	Effects.use(material, SHINE_SHADER)
+	Effects.use(material, SHINE_SHADER, smooth)
 	material.set_shader_parameter("period", period)
 	material.set_shader_parameter("gild", gild)
 	node.material = material
@@ -3271,16 +3315,31 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 ## A band across the middle of the table: `title`, and a `subtitle` (BBCode)
 ## under it. It opens, holds a moment and fades, letting clicks through.
 ## Bands queue up behind one another; with `hold`, choices wait for it.
-func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool) -> void:
+## Options:
+##   ok: stays longer, with an OK button (or a click on the band) to dismiss
+##     it sooner; a bar in the button runs down the time left.
+##   extra: a Control shown under the title.
+##   footer: BBCode on the OK button's line, left of it.
+##   on_close: called once the band has gone.
+##   read_time: how long it stays (with ok; default BAND_READ_TIME).
+func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool, opts: Dictionary = {}) -> void:
+	var ok: bool = opts.get("ok", false)
+	var read_time: float = opts.get("read_time", BAND_READ_TIME)
 	if hold:
 		_hold_choices = true
-	while _band_up():
-		await _title_layer.tree_exited
+	var ticket := _stage_take()
+	await _stage_wait(ticket)
+	if not is_inside_tree():
+		return
 	var layer := CanvasLayer.new()
 	layer.layer = 6
 	add_child(layer)
 	_title_layer = layer
+	var on_close: Callable = opts.get("on_close", Callable())
 	layer.tree_exited.connect(func() -> void:
+		_stage_leave(ticket)
+		if on_close.is_valid() and is_inside_tree():
+			on_close.call()
 		if hold:
 			_hold_choices = _spotlights > 0
 			_queue_refresh())
@@ -3293,8 +3352,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	style.border_width_bottom = 2
 	style.shadow_color = Color(0, 0, 0, 0.5)
 	style.shadow_size = 30
-	style.content_margin_top = 18
-	style.content_margin_bottom = 18
+	style.content_margin_top = 30 if ok else 18
+	style.content_margin_bottom = 30 if ok else 18
 	band.add_theme_stylebox_override("panel", style)
 	band.set_anchors_preset(PRESET_CENTER)
 	band.anchor_left = 0.0
@@ -3304,18 +3363,22 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	var lines := VBoxContainer.new()
 	lines.alignment = BoxContainer.ALIGNMENT_CENTER
 	lines.mouse_filter = MOUSE_FILTER_IGNORE
+	lines.add_theme_constant_override("separation", 14 if ok else 4)
 	band.add_child(lines)
 	var title := _label(title_text, 46, color, true)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_outline_color", Color(0.1, 0.05, 0.02))
 	title.add_theme_constant_override("outline_size", 8)
 	lines.add_child(title)
-	var sub := _rich(19)
-	sub.fit_content = true
-	sub.mouse_filter = MOUSE_FILTER_IGNORE
-	sub.add_theme_color_override("default_color", Color(0.95, 0.88, 0.72))
-	sub.text = "[center]%s[/center]" % subtitle
-	lines.add_child(sub)
+	var extra: Control = opts.get("extra")
+	if extra != null:
+		extra.size_flags_horizontal = SIZE_SHRINK_CENTER
+		lines.add_child(extra)
+	if not subtitle.is_empty():
+		var sub := _band_text(subtitle)
+		sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sub.text = "[center]%s[/center]" % subtitle
+		lines.add_child(sub)
 	band.pivot_offset = Vector2(get_viewport_rect().size.x / 2.0, band.get_combined_minimum_size().y / 2.0)
 	band.modulate.a = 0.0
 	var tween := band.create_tween()
@@ -3323,9 +3386,85 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	tween.tween_property(band, "modulate:a", 1.0, 0.25)
 	tween.parallel().tween_property(band, "scale:y", 1.0, 0.3).from(0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(title, "position:x", 0.0, 0.5).from(-60.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tween.tween_interval(1.1 if hold else 1.8)
+	tween.tween_interval(read_time if ok else (1.1 if hold else 1.8))
 	tween.tween_property(band, "modulate:a", 0.0, 0.45)
 	tween.tween_callback(layer.queue_free)
+	if not ok:
+		return
+	var dismiss := func() -> void:
+		if not tween.is_valid():
+			return
+		tween.kill()
+		var out := band.create_tween()
+		out.tween_property(band, "modulate:a", 0.0, 0.2)
+		out.tween_callback(layer.queue_free)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 28)
+	row.size_flags_horizontal = SIZE_SHRINK_CENTER
+	lines.add_child(row)
+	var footer: String = opts.get("footer", "")
+	if not footer.is_empty():
+		var text := _band_text(footer)
+		text.autowrap_mode = TextServer.AUTOWRAP_OFF
+		text.size_flags_vertical = SIZE_SHRINK_CENTER
+		text.size_flags_horizontal = SIZE_SHRINK_BEGIN
+		text.text = footer
+		row.add_child(text)
+	var button := _primary(_button("OK", dismiss))
+	button.focus_mode = FOCUS_NONE # the keyboard stays on the hand
+	button.custom_minimum_size.x = 120
+	button.size_flags_horizontal = SIZE_SHRINK_CENTER
+	row.add_child(button)
+	_band_ok = button
+	_badge(button, "O") # O, Enter or Space (see _input)
+	# The time left: a thin bar along the button's foot, inside its rim and
+	# following its rounded corners, running down.
+	var countdown_started := [false]
+	var frame := button.get_theme_stylebox("normal") as StyleBoxFlat
+	var rim_l := frame.border_width_left if frame else 0
+	var rim_r := frame.border_width_right if frame else 0
+	var rim_b := frame.border_width_bottom if frame else 0
+	var bar := Panel.new()
+	bar.mouse_filter = MOUSE_FILTER_IGNORE
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = Color(0.72, 0.95, 0.62, 0.9)
+	if frame:
+		fill.corner_radius_bottom_left = maxi(0, frame.corner_radius_bottom_left - rim_b)
+		fill.corner_radius_bottom_right = maxi(0, frame.corner_radius_bottom_right - rim_b)
+	fill.anti_aliasing = frame.anti_aliasing if frame else true
+	bar.add_theme_stylebox_override("panel", fill)
+	button.add_child(bar)
+	var fit := func(left: float) -> void:
+		if not is_instance_valid(bar):
+			return
+		var height := 4.0
+		bar.position = Vector2(rim_l, button.size.y - rim_b - height)
+		bar.size = Vector2(maxf(0.0, (button.size.x - rim_l - rim_r) * left), height)
+	fit.call(1.0)
+	button.resized.connect(func() -> void:
+		if not countdown_started[0]:
+			fit.call(1.0)) # laid out after it was made
+	var countdown := bar.create_tween()
+	countdown.tween_interval(delay + 0.25)
+	countdown.tween_callback(func() -> void: countdown_started[0] = true)
+	countdown.tween_method(fit, 1.0, 0.0, read_time)
+	band.mouse_filter = MOUSE_FILTER_STOP
+	band.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed:
+			dismiss.call())
+
+## A line of BBCode text for a band.
+func _band_text(bbcode: String) -> RichTextLabel:
+	var text := _rich(19)
+	text.fit_content = true
+	text.mouse_filter = MOUSE_FILTER_IGNORE
+	text.add_theme_color_override("default_color", Color(0.95, 0.88, 0.72))
+	return text
+
+## How long a band with an OK button stays up, unless dismissed.
+const BAND_READ_TIME := 5.0
 
 ## Whether a band is on screen. (A band that has just left the tree is still
 ## a valid object until the end of the frame: waiting for it to exit again
@@ -3335,28 +3474,93 @@ func _band_up() -> bool:
 
 ## A Battle is announced: when and how it will be fought.
 func _battle_announced(p: int) -> void:
-	var text := "It is fought on [b]your next build[/b]." if p == _seat else "It is fought on %s's next build." % _who(p)
-	text += "\nEveryone who builds then compares the card they built (+1 per Battle symbol); the best draws a card."
-	_band("You announce a Battle!" if p == _seat else "A Battle is announced!", Color(1.0, 0.55, 0.4), text, 0.0, false)
+	var when := "your next build" if p == _seat else "%s's next build" % _who(p)
+	var text := "On [b]%s[/b], whoever builds the best card draws a card." % when
+	_band("You announce a Battle!" if p == _seat else "A Battle is announced!", Color(1.0, 0.55, 0.4), text, 0.0, false, {"ok": true})
 
 ## A Battle is fought: each builder's score, and who wins.
-func _battle_fought(p: int, winner: int, scores: Dictionary, count: int) -> void:
-	var parts: Array[String] = []
-	for q: int in scores:
-		var name := "You" if q == _seat else _who(q)
-		var score := "[b]%d[/b]" % scores[q]
-		if q == winner:
-			score = "[color=#ffd36b]%s[/color]" % score
-		parts.append("%s %s" % [name, score])
+func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, details: Dictionary = {}) -> void:
+	var title: String
 	var outcome: String
+	var cards := "%d card%s" % [count, "" if count == 1 else "s"]
 	if winner < 0:
-		outcome = "A draw: nobody draws."
+		title = "Battle: a tie"
+		outcome = "Nobody draws."
 	elif winner == _seat:
-		outcome = "[color=#ffd36b]You win and draw %d.[/color]" % count
+		title = "You win the Battle!"
+		outcome = "[color=#ffd36b]You draw %s.[/color]" % cards
 	else:
-		outcome = "%s wins and draws %d." % [_who(winner), count]
-	var whose := "Your Battle" if p == _seat else "%s's Battle" % _who(p)
-	_band("Battle!", Color(1.0, 0.55, 0.4), "%s:   %s\n%s" % [whose, "   ·   ".join(parts), outcome], 0.0, false)
+		title = "%s wins the Battle" % game.players[winner].name
+		outcome = "%s draws %s." % [_who(winner), cards]
+	if winner >= 0 and scores.values().count(scores[winner]) > 1:
+		outcome = "Tie broken by Tentacles. " + outcome
+	# Cards you draw stay hidden in your hand until the band has gone, then
+	# come from the Supply.
+	var drawn: Array = []
+	if winner == _seat and count > 0:
+		var hand: Array = game.players[_seat].hand
+		drawn = hand.slice(max(0, hand.size() - count))
+		for id: int in drawn:
+			_in_spotlight[id] = true
+	_band(title, Color(1.0, 0.55, 0.4), "", 0.0, not drawn.is_empty(), {
+		"ok": true, "extra": _battle_table(winner, scores, details), "footer": outcome,
+		"read_time": BAND_READ_TIME * 1.3, # a table to read
+		"on_close": func() -> void: _deal_from_supply(drawn),
+	})
+
+## Cards already in your hand, hidden meanwhile, dealt in from the Supply.
+func _deal_from_supply(ids: Array) -> void:
+	if ids.is_empty():
+		return
+	for id: int in ids:
+		_in_spotlight.erase(id)
+	await get_tree().process_frame # laid out by the refresh the band's end queued
+	if not is_inside_tree():
+		return
+	var from: Dictionary = _opp_pose(_seat)
+	if _pile_views.has("supply") and is_instance_valid(_pile_views.supply):
+		from = CardMotion.pose_of(_pile_views.supply, false)
+	var k := 0
+	for id: int in ids:
+		var target := _hand_view(id)
+		if target == null:
+			continue
+		_motion.fly(id, from, CardMotion.pose_of(target, true), {"target": target, "zone": "hand", "delay": k * 0.12})
+		k += 1
+	if k > 0:
+		_sfx.play("card_deal", -2.0)
+
+## The Battle's scores, one row per pirate: the card built, its value, the
+## bonus from Battle symbols and the total (the winner's row in gold).
+func _battle_table(winner: int, scores: Dictionary, details: Dictionary) -> GridContainer:
+	var grid := GridContainer.new()
+	grid.mouse_filter = MOUSE_FILTER_IGNORE
+	grid.add_theme_constant_override("h_separation", 36)
+	grid.add_theme_constant_override("v_separation", 4)
+	var muted := Color(0.75, 0.68, 0.55)
+	var headers: Array = ["Pirate", "Card built", "Value", "Battle bonus", "Total"] if not details.is_empty() else ["Pirate", "Total"]
+	grid.columns = headers.size()
+	for i in range(headers.size()):
+		var head := _label(headers[i], 15, muted)
+		head.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if i < 2 else HORIZONTAL_ALIGNMENT_CENTER
+		grid.add_child(head)
+	for q: int in scores:
+		var won := q == winner
+		var text_color := GOLD if won else Color(0.95, 0.88, 0.72)
+		var cells: Array = ["You" if q == _seat else game.players[q].name]
+		if not details.is_empty():
+			var d: Dictionary = details.get(q, {})
+			var card: int = d.get("card", -1)
+			cells.append(CardDB.title(card) if card >= 0 else "—")
+			cells.append(str(d.get("value", 0)))
+			cells.append("+%d" % d.get("bonus", 0))
+		cells.append(str(scores[q]))
+		for i in range(cells.size()):
+			var color: Color = PLAYER_COLORS[q % PLAYER_COLORS.size()] if i == 0 else text_color
+			var cell := _label(cells[i], 18, color, i == 0 or i == cells.size() - 1)
+			cell.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if i < 2 else HORIZONTAL_ALIGNMENT_CENTER
+			grid.add_child(cell)
+	return grid
 
 ## A claimed Infamy card: shown mid-table ("Silver Ines claims it!"), then
 ## off to its new owner's crew, glowing, landing in a puff of gold.
@@ -3400,12 +3604,19 @@ func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 ## `finish` is called with its pose (to send it on) and the table clears.
 ## Cards with the same `key` (the claimer; -1 when contested) arriving
 ## together share the table; other keys get their own turn, one after another.
-func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable) -> void:
+## `ticket`: a stage ticket already taken for it (else it takes one).
+func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable, reveal_in_place: bool = true, holder: CardView = null, fly_time: float = 0.85, ticket: int = -1) -> void:
 	# A card claimed as it is revealed first turns over where it lies, and
-	# stays there a moment, so everyone sees what came up.
+	# stays there a moment, so everyone sees what came up. (Otherwise it
+	# turns over on its way to the middle.)
 	var revealed: CardView = null
 	var shown_at := Time.get_ticks_msec()
-	if not from.face_up:
+	if holder != null:
+		# A copy already on show where the card starts (a hooked card): it
+		# stays until the flight starts.
+		revealed = holder
+		shown_at -= 10000
+	elif not from.face_up and reveal_in_place:
 		var up := from.duplicate()
 		up.face_up = true
 		revealed = CardView.make(id, from.size, true)
@@ -3424,21 +3635,14 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 		if g.key == key:
 			group = g
 	if group.is_empty():
-		group = {"key": key, "frame": now, "ids": [], "after": _spot_last, "done": false}
+		group = {"key": key, "frame": now, "ids": [], "ticket": ticket if ticket >= 0 else _stage_take()}
 		_spot_groups.append(group)
-		_spot_last = group
 	var ids: Array = group.ids
 	var slot := ids.size()
 	ids.append(id)
 	# The group is complete once this frame is over.
 	await get_tree().process_frame
-	while not group.after.is_empty() and not group.after.done:
-		await _spotlight_cleared
-		if not is_inside_tree():
-			return
-	group.after = {}
-	while _band_up():
-		await _title_layer.tree_exited
+	await _stage_wait(group.ticket)
 	if not is_inside_tree():
 		return # the table was closed meanwhile
 	if revealed != null:
@@ -3470,7 +3674,8 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	view.mouse_filter = MOUSE_FILTER_IGNORE
 	view.position = center - card_size / 2.0
 	layer.add_child(view)
-	view.set_requirement(_banners_met(_seat, id))
+	if CardDB.is_infamy(id):
+		view.set_requirement(_banners_met(_seat, id))
 	var caption := _rich(18)
 	caption.fit_content = true
 	caption.mouse_filter = MOUSE_FILTER_IGNORE
@@ -3486,7 +3691,7 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	if slot == 0:
 		_sfx.play("reveal", -4.0)
 	var to := {"center": center, "size": card_size, "rotation": 0.0, "face_up": true}
-	_motion.fly(id, from, to, {"target": view, "duration": 0.85, "lift": 0.25, "arc": 70.0})
+	_motion.fly(id, from, to, {"target": view, "duration": fly_time, "lift": 0.25, "arc": 70.0})
 	var tween := create_tween()
 	tween.tween_property(dim, "modulate:a", 1.0, 0.4)
 	tween.tween_interval(0.5)
@@ -3503,12 +3708,148 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 		layer.queue_free()
 		dim_layer.queue_free()
 		if slot == 0: # the group's last to clear (its dim waits for the others)
-			group.done = true
-			_spotlight_cleared.emit()
+			_stage_leave(group.ticket)
 		_spotlights -= 1
 		if _spotlights == 0 and not _band_up():
 			_hold_choices = false
 			_queue_refresh())
+
+## Spotlight keys for Hooks, apart from the claimers' (player indices) and
+## contested cards (-1).
+const HOOK_SPOT_KEY := 1000
+
+## A Hook that touches you: the card taken shown mid-table, like an Infamy
+## card. Stolen from you, it leaves your hand for the middle, then the thief's
+## hand; stolen by you, it comes from the victim, turning over, to your hand.
+func _hook_ceremony(id: int, thief: int, victim: int) -> void:
+	var keeps: bool = game.symbol_count(thief, "hooks") >= 3
+	var title: String
+	var note: String
+	var from: Dictionary
+	var tugged: CardView = null
+	if victim == _seat:
+		var held := _hand_view(id)
+		if held == null:
+			return
+		from = CardMotion.pose_of(held, true)
+		held.modulate.a = 0.0
+		tugged = _hooked_copy(id, from) # still where it was, until its turn
+		title = "[color=#ff8a70]%s hooks your card![/color]" % _who(thief)
+		note = "With 3 Hooks, they keep it." if keeps else "They must give you a card back."
+	else:
+		from = _opp_pose(victim)
+		title = "[color=#ffd36b]You hook it from %s![/color]" % _who(victim)
+		note = "With 3 Hooks, you keep it." if keeps else "Now choose a card to give back."
+	var caption := "[center][font_size=%d][b]%s[/b][/font_size]\n%s[/center]" % [_fs(30), title, note]
+	_in_spotlight[id] = true
+	_spotlights += 1
+	_hold_choices = true
+	# Each Hook gets the table to itself, after whatever came before it.
+	var ticket := _stage_take()
+	if tugged != null:
+		await _stage_wait(ticket)
+		if not is_instance_valid(tugged) or not is_inside_tree():
+			_stage_leave(ticket)
+			return
+		# Yanked out of the hand first; then slowly hauled to the middle.
+		_hook_tug(tugged)
+		await get_tree().create_timer(HOOK_TUG_TIME).timeout
+		if not is_instance_valid(tugged) or not is_inside_tree():
+			_stage_leave(ticket)
+			return
+		from = CardMotion.pose_of(tugged, true)
+	var finish := func(pose: Dictionary) -> void:
+		_in_spotlight.erase(id)
+		if victim == _seat:
+			var to := _opp_pose(thief)
+			_motion.fly(id, pose, to, {"fade_out": true, "duration": 0.8, "lift": 0.1, "arc": 60.0})
+			return
+		var target := _hand_view(id)
+		if target == null:
+			_motion.burst(pose.center, pose.size)
+			return
+		_motion.fly(id, pose, CardMotion.pose_of(target, true), {
+			"target": target, "zone": "hand", "duration": 0.8, "lift": 0.08, "arc": 40.0, "glow": true,
+		})
+	_spotlight(id, from, caption, HOOK_SPOT_KEY + ticket, finish, false, tugged, 1.3 if tugged != null else 0.85, ticket)
+
+const HOOK_TUG_TIME := 0.9
+
+## A copy of the hooked card where it lay in your hand (it stays until the
+## spotlight takes over).
+func _hooked_copy(id: int, from: Dictionary) -> CardView:
+	var ghost := CardView.make(id, from.size, true)
+	ghost.interactive = false
+	ghost.mouse_filter = MOUSE_FILTER_IGNORE
+	ghost.pivot_offset = from.size / 2.0
+	ghost.position = from.center - from.size / 2.0
+	ghost.rotation = from.rotation
+	_motion.add_child(ghost)
+	return ghost
+
+## The hooked card jerks up out of your hand, outlined red, and struggles on
+## the line a moment.
+func _hook_tug(ghost: CardView) -> void:
+	ghost.mark = CardView.Mark.PAYMENT
+	var up := ghost.position + Vector2(0.0, -90.0)
+	var tween := ghost.create_tween()
+	tween.tween_property(ghost, "position", up, 0.28).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(ghost, "rotation_degrees", -7.0, 0.14)
+	tween.tween_property(ghost, "rotation_degrees", 6.0, 0.12)
+	tween.tween_property(ghost, "rotation_degrees", -4.0, 0.12)
+	tween.tween_property(ghost, "rotation_degrees", 2.0, 0.1)
+	tween.tween_property(ghost, "rotation_degrees", 0.0, 0.1)
+	tween.parallel().tween_property(ghost, "position", up + Vector2(0.0, -14.0), 0.2)
+
+## A card the Hook's thief gives back to you: it waits for the steal to be
+## shown, then sails from their seat into your hand.
+func _receive_gift(id: int, giver: int) -> void:
+	_in_spotlight[id] = true # hidden in the hand meanwhile
+	var ticket := _stage_take()
+	await get_tree().process_frame # the hand is laid out
+	await _stage_wait(ticket)
+	if not is_inside_tree():
+		return
+	_in_spotlight.erase(id)
+	var target := _hand_view(id)
+	if target == null:
+		_stage_leave(ticket)
+		return
+	_sfx.play("card_deal", -2.0)
+	_motion.fly(id, _opp_pose(giver), CardMotion.pose_of(target, true), {
+		"target": target, "zone": "hand", "duration": 1.0, "lift": 0.3, "arc": 110.0, "glow": true,
+	})
+	# The next moment may start as it lands.
+	await get_tree().create_timer(0.8).timeout
+	_stage_leave(ticket)
+
+func _stage_take() -> int:
+	_stage_next += 1
+	return _stage_next - 1
+
+## Waits until `ticket` is on stage.
+func _stage_wait(ticket: int) -> void:
+	while _stage_now < ticket and is_inside_tree():
+		await _stage_moved
+
+## `ticket` is done: the next one goes on.
+func _stage_leave(ticket: int) -> void:
+	if ticket >= _stage_now:
+		_stage_now = ticket + 1
+		_stage_moved.emit()
+
+func _hand_view(id: int) -> CardView:
+	for view in _hand_views:
+		if is_instance_valid(view) and view.is_inside_tree() and view.card_id == id:
+			return view
+	return null
+
+## A face-down card at player `p`'s seat (their panel), or mid-table.
+func _opp_pose(p: int) -> Dictionary:
+	var center := get_viewport_rect().size / 2.0
+	if _opp_panels.has(p) and is_instance_valid(_opp_panels[p]) and _opp_panels[p].is_inside_tree():
+		center = (_opp_panels[p] as Control).get_global_rect().get_center()
+	return {"center": center, "size": OPP_CARD, "rotation": 0.0, "face_up": false}
 
 ## A claimed Infamy card lifts high, glowing, and lands in a puff of gold.
 func _claim_flight() -> Dictionary:
@@ -3544,6 +3885,12 @@ func _animate_vanished(id: int, from: Dictionary, anchors: Dictionary) -> void:
 		var claimer: int = _claimed[id]
 		_claimed.erase(id)
 		_spotlight_claim(id, from, claimer)
+		return
+	if _gifts.has(id):
+		_gifts.erase(id)
+		# Given back after a Hook: it rises from the hand and sails, glowing,
+		# to the pirate it goes to.
+		_motion.fly(id, from, to, {"fade_out": true, "glow": true, "duration": 1.0, "lift": 0.3, "arc": 110.0})
 		return
 	_motion.fly(id, from, to, {"fade_out": true})
 
@@ -3584,12 +3931,19 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_shuffle_pile(info.deck)
 		"hook":
 			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
+			if _seat in [p, info.target] and info.has("card"):
+				_hook_ceremony(info.card, p, info.target)
+		"hook_give":
+			if p == _seat:
+				_gifts[info.card] = true
+			elif info.target == _seat:
+				_receive_gift(info.card, p)
 		"battle_announce":
 			_sfx.play("battle", volume - 10.0)
 			_battle_announced(p)
 		"battle":
 			_sfx.play("battle")
-			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1))
+			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1), info.get("details", {}))
 		"claim":
 			_sfx.play("claim", volume)
 			_claimed[info.card] = p
@@ -3648,9 +4002,9 @@ func _on_hand_clicked(view: CardView) -> void:
 			elif game.players[_seat].hand.has(id):
 				_selected.append(id)
 		"hook_give":
-			if not is_windfall and game.players[_seat].hand.has(id):
-				_submit({"card": id})
-			return
+			if _hold_choices or is_windfall or not game.players[_seat].hand.has(id):
+				return
+			_give_card = -1 if id == _give_card else id
 		_:
 			return
 	_render_hand()
@@ -3717,6 +4071,11 @@ func _input(event: InputEvent) -> void:
 		_menu_key(key)
 		return
 	if game == null:
+		return
+	if key in [KEY_O, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE] and is_instance_valid(_band_ok) and _band_ok.is_visible_in_tree():
+		# A band waiting for its OK takes these first.
+		_band_ok.pressed.emit()
+		get_viewport().set_input_as_handled()
 		return
 	match key:
 		KEY_LEFT, KEY_RIGHT:
