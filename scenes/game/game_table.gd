@@ -3976,6 +3976,13 @@ func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 		await _landings_done()
 		if not is_inside_tree():
 			return
+	# A card just claimed (an Infamy card with a Hook, say) is shown first:
+	# its spotlight takes its stage ticket at the next refresh, so let it.
+	await get_tree().process_frame
+	while not _claimed.is_empty() and is_inside_tree():
+		await get_tree().process_frame
+	if not is_inside_tree():
+		return
 	# Each Hook gets the table to itself, after whatever came before it.
 	var ticket := _stage_take()
 	await _stage_wait(ticket)
