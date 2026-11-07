@@ -192,6 +192,11 @@ var _band_ok: Button = null # the OK of the band on screen, if it has one
 var _band_dismiss := Callable() # closes that band
 var _band_since := 0 # when it showed (msec): a click on the hand closes it, after a grace
 var _landing: Array = [] # your cards on their way to the crew: [{id, draws}]
+var _retract_restore := {} # a build taken back: its selection, to restore
+var _retract_sent := false # online: a take-back on its way to the relay
+var _active := {} # crew card id -> reasons it glows (its effect is resolving)
+var _pending_sources := {} # cards whose effect waits on a pirate's choice -> lit yet
+var _hooks_waiting := 0 # Hook ceremonies yet to take their stage ticket
 var _band_holds := 0 # bands (shown or queued) that hold the choices
 var _hooked_keep := {} # card id -> true: hooked from you, still shown in hand until its tug
 # Battle bands still waiting to show, that later Battles join.
@@ -304,6 +309,11 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_spot_groups = []
 	_sent_build = {}
 	_landing.clear()
+	_active.clear()
+	_retract_restore = {}
+	_retract_sent = false
+	_pending_sources.clear()
+	_hooks_waiting = 0
 	_hooked_keep.clear()
 	_announce_batch = null
 	_result_batch = null
@@ -348,7 +358,8 @@ func _process(delta: float) -> void:
 func _submit(action: Dictionary) -> void:
 	var current: Variant = game.pending.get(_seat)
 	if current != null and current.type == "build" and not action.get("pass", false):
-		_sent_build = {"card": action.card, "pay": action.get("discards", []).duplicate(), "windfall": action.get("windfall", false)}
+		_sent_build = {"card": action.card, "pay": action.get("discards", []).duplicate(), "windfall": action.get("windfall", false),
+			"dest": action.get("windfall_dest", DeckhandGame.WINDFALL_DECK), "decision": current}
 	if not _online:
 		var error := game.submit(_seat, action)
 		if not error.is_empty():
@@ -365,6 +376,21 @@ func _submit(action: Dictionary) -> void:
 	_sent[_seat] = decision
 	_net.send_action(_seat, action)
 	# Dim the choice at once while the relay answers.
+	_queue_refresh()
+
+## Takes back the build you chose while the others still choose theirs.
+func _take_back() -> void:
+	if not game.can_retract(_seat):
+		_flash("Too late: every pirate has chosen.")
+		return
+	_retract_restore = _sent_build.duplicate()
+	if not _online:
+		game.submit(_seat, {"retract": true})
+		return
+	if _retract_sent:
+		return
+	_retract_sent = true
+	_net.send_action(_seat, {"retract": true})
 	_queue_refresh()
 
 ## Whether this machine has sent the pending choice and awaits the relay.
@@ -439,6 +465,8 @@ func _on_net_acted(n: int, seat: int, action: Dictionary) -> void:
 	game.submit(seat, action)
 	_applied += 1
 	_sent.erase(seat)
+	if seat == _seat and action.get("retract", false):
+		_retract_sent = false
 	if _applied % 5 == 0:
 		_net.send_checksum(_applied, game.checksum())
 
@@ -1797,6 +1825,7 @@ func _quiet(button: Button) -> Button:
 
 func _card(id: int, card_size: Vector2, face_up: bool = true) -> CardView:
 	var view := CardView.make(id, card_size, face_up)
+	view.active = _active.has(id)
 	view.hovered.connect(_on_card_hovered)
 	_card_views.append(view)
 	view.unhovered.connect(_on_card_unhovered)
@@ -1840,6 +1869,14 @@ func _refresh() -> void:
 			_sent_build = {} # a new choice: the last build is over
 		_decision = decision
 		_reset_input()
+		if decision != null and is_same(_retract_restore.get("decision"), decision):
+			# A build taken back: chosen again as it was, to change.
+			_build_card = _retract_restore.card
+			_pay.assign(_retract_restore.pay)
+			_pay_windfall = _retract_restore.windfall
+			_windfall_dest = _retract_restore.dest
+		_retract_restore = {}
+	_track_pending_sources()
 	# Hovered cards may be rebuilt below without an exit event. (If the same
 	# card is hovered again this frame, the zoom simply stays.)
 	_hide_zoom()
@@ -2481,6 +2518,11 @@ func _render_action() -> void:
 		_set_buttons([["Scores", _show_finale], ["New game", _open_menu]])
 		return
 	if decision == null or _choice_sent():
+		if decision == null and game.can_retract(_seat) and not _retract_sent:
+			# Your build waits for the others': it can still be changed.
+			_action_text.text = "[color=#8a96a6]Your build is chosen. The other pirates are deciding…[/color]"
+			_set_buttons([["Take back", _take_back]])
+			return
 		_action_text.text = "[color=#8a96a6]The other pirates are deciding…[/color]"
 		_set_buttons([])
 		return
@@ -3358,6 +3400,7 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool, opts: Dictionary = {}) -> void:
 	var ok: bool = opts.get("ok", false)
 	var read_time: float = opts.get("read_time", BAND_READ_TIME)
+	var g := game
 	if hold:
 		_band_holds += 1
 		_hold_choices = true
@@ -3371,8 +3414,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 			return
 	var ticket := _stage_take()
 	await _stage_wait(ticket)
-	if not is_inside_tree():
-		return
+	if not is_inside_tree() or not is_same(g, game):
+		return # closed, or a new game started meanwhile (its stage is new)
 	var compose: Callable = opts.get("compose", Callable())
 	if compose.is_valid():
 		# Made now, on its turn: what came in meanwhile is merged in.
@@ -3560,16 +3603,20 @@ func _band_up() -> bool:
 
 ## A Battle is announced: when and how it will be fought. Battles announced
 ## before the band shows share it.
-func _battle_announced(p: int) -> void:
+func _battle_announced(p: int, source: int = -1) -> void:
 	if _announce_batch != null:
 		_announce_batch.counts[p] = _announce_batch.counts.get(p, 0) + 1
+		_announce_batch.sources.append(source)
 		return
-	var batch := {"counts": {p: 1}}
+	var batch := {"counts": {p: 1}, "sources": [source]}
 	_announce_batch = batch
 	_band("", BATTLE_COLOR, "", 0.0, false, {"ok": true, "after_landing": true, "icon": "fx-battle",
 		"compose": func() -> Dictionary:
 			if is_same(_announce_batch, batch):
 				_announce_batch = null
+			# The cards that announced them glow while the band is read.
+			for id: int in batch.sources:
+				_pulse_active(id, ACTIVE_BAND_TIME)
 			return _announce_text(batch.counts),
 	})
 
@@ -3659,6 +3706,75 @@ func _deal_from_supply(ids: Array) -> void:
 		_fresh[id] = true # on the table all along, hidden: not "stayed put"
 	_queue_refresh()
 	_sfx.play("card_deal", -2.0)
+
+# --- Active cards: a halo while a card's effect resolves --------------------
+
+const ACTIVE_PULSE := 1.6 # a quick effect (a draw): how long its card glows
+const ACTIVE_BAND_TIME := 3.0 # a Battle announced: while its band is read
+
+## Card `id` glows (`on`) or stops (each reason counted: it glows while any
+## remains).
+func _set_active(id: int, on: bool) -> void:
+	if id < 0:
+		return
+	var n: int = _active.get(id, 0) + (1 if on else -1)
+	if n > 0:
+		_active[id] = n
+	else:
+		_active.erase(id)
+	for view in _card_views:
+		if is_instance_valid(view) and view.card_id == id:
+			view.active = n > 0
+
+## Card `id` glows for `seconds`, once it is at rest in its crew (a card
+## still flying there, shown mid-table first, or your cards still landing).
+func _pulse_active(id: int, seconds: float = ACTIVE_PULSE) -> void:
+	if id < 0 or not is_inside_tree():
+		return
+	var waited := 0.0
+	while is_inside_tree() and waited < LANDING_TIMEOUT and not _rests_in_crew(id):
+		await get_tree().process_frame
+		waited += get_process_delta_time()
+	if not is_inside_tree():
+		return
+	var g := game
+	_set_active(id, true)
+	await get_tree().create_timer(seconds).timeout
+	if is_inside_tree() and is_same(g, game):
+		_set_active(id, false)
+
+func _rests_in_crew(id: int) -> bool:
+	if not _card_settled(id):
+		return false
+	return not (game.players[_seat].crew.has(id) and not _landing.is_empty())
+
+## Cards whose effect waits on a pirate's choice (a Telescope, a choice of
+## three, a Hook's target) glow until it is made, from when they are at rest.
+func _track_pending_sources() -> void:
+	var now := {}
+	for p: int in game.pending:
+		var source: int = (game.pending[p] as Dictionary).get("source", -1)
+		if source >= 0:
+			now[source] = true
+	for id: int in _pending_sources.keys():
+		if not now.has(id):
+			if _pending_sources[id]:
+				_set_active(id, false)
+			_pending_sources.erase(id)
+	for id: int in now:
+		if not _pending_sources.has(id):
+			_pending_sources[id] = false # lit once it has landed
+			_light_pending(id)
+
+func _light_pending(id: int) -> void:
+	var g := game
+	var waited := 0.0
+	while is_inside_tree() and waited < LANDING_TIMEOUT and not _rests_in_crew(id):
+		await get_tree().process_frame
+		waited += get_process_delta_time()
+	if is_inside_tree() and is_same(g, game) and _pending_sources.get(id) == false:
+		_pending_sources[id] = true
+		_set_active(id, true)
 
 # --- Landing: a card's effects wait for it to reach your crew ---------------
 
@@ -3842,10 +3958,13 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	var slot := ids.size()
 	ids.append(id)
 	# The group is complete once this frame is over.
+	var g := game
 	await get_tree().process_frame
 	await _stage_wait(group.ticket)
-	if not is_inside_tree():
-		return # the table was closed meanwhile
+	if not is_inside_tree() or not is_same(g, game):
+		if is_instance_valid(revealed) and revealed != holder:
+			revealed.queue_free()
+		return # the table was closed, or a new game started, meanwhile
 	if revealed != null:
 		var held := (Time.get_ticks_msec() - shown_at) / 1000.0
 		if held < 1.2:
@@ -3969,6 +4088,8 @@ func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 	var caption := "[center][font_size=%d][b]%s[/b][/font_size]\n%s[/center]" % [_fs(30), title, note]
 	_spotlights += 1
 	_hold_choices = true
+	# A card given back must wait for this steal to be shown first.
+	_hooks_waiting += 1
 	if thief == _seat:
 		# Your Hook card reaches your crew first. (Before taking a ticket:
 		# a claimed card's spotlight, which the landing waits on, takes its
@@ -3984,13 +4105,17 @@ func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 	if not is_inside_tree():
 		return
 	# Each Hook gets the table to itself, after whatever came before it.
+	var g := game
 	var ticket := _stage_take()
+	_hooks_waiting -= 1
 	await _stage_wait(ticket)
-	if not is_inside_tree():
+	if not is_inside_tree() or not is_same(g, game):
 		return
 	await _crew_settled()
 	if not is_inside_tree():
 		return
+	# The card that hooks glows while its Hook is shown.
+	_pulse_active(source, (HOOK_TUG_TIME + HOOK_HAUL_TIME if victim == _seat else 0.85) + HOOK_SHOW_TIME + 1.2)
 	var tugged: CardView = null
 	if victim == _seat:
 		var held := _hand_view(id)
@@ -4108,10 +4233,16 @@ func _receive_gift(id: int, giver: int) -> void:
 	_in_spotlight[id] = true # hidden in the hand meanwhile
 	_spotlights += 1
 	_hold_choices = true
-	var ticket := _stage_take()
+	# After the steal it answers (its ceremony may not have queued yet).
 	await get_tree().process_frame # the hand is laid out
-	await _stage_wait(ticket)
+	while _hooks_waiting > 0 and is_inside_tree():
+		await get_tree().process_frame
 	if not is_inside_tree():
+		return
+	var g := game
+	var ticket := _stage_take()
+	await _stage_wait(ticket)
+	if not is_inside_tree() or not is_same(g, game):
 		return
 	await get_tree().create_timer(GIFT_PAUSE).timeout
 	if not is_inside_tree():
@@ -4234,6 +4365,11 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 				_sfx.play("card_place", volume)
 			if p == _seat:
 				_await_landing(info.card)
+		"effect":
+			# Hooks glow with their ceremony, Battles with their band;
+			# Compasses work in the draft.
+			if not info.effect in ["hook", "battle", "compass"]:
+				_pulse_active(info.source)
 		"draw":
 			if p == _seat and info.has("cards") and not _landing.is_empty():
 				# Drawn by a card still landing: dealt once it has.
@@ -4250,6 +4386,8 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
 			if _seat in [p, info.target] and info.has("card"):
 				_hook_ceremony(info.card, p, info.target, info.get("source", -1))
+			else:
+				_pulse_active(info.get("source", -1))
 		"hook_give":
 			if p == _seat:
 				_gifts[info.card] = true
@@ -4257,7 +4395,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 				_receive_gift(info.card, p)
 		"battle_announce":
 			_sfx.play("battle", volume - 10.0)
-			_battle_announced(p)
+			_battle_announced(p, info.get("source", -1))
 		"battle":
 			_sfx.play("battle")
 			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1), info.get("details", {}), info.get("battles", 1))

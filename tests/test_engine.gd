@@ -13,6 +13,7 @@ func _init() -> void:
 	test_battles()
 	test_compasses()
 	test_telescope_stack()
+	test_take_back_build()
 	print("\n%s" % ("ALL TESTS PASSED" if failures == 0 else "%d FAILURE(S)" % failures))
 	quit(1 if failures > 0 else 0)
 
@@ -200,6 +201,29 @@ func test_telescope_stack() -> void:
 	game.submit(0, {"swap": true})
 	check(game.row[slot].cards == [deck_card, windfall], "the swap replaces that card only")
 	check(game.infamy_deck.has(original), "the swapped card is in the Infamy deck")
+
+## A build chosen can be taken back while another pirate still chooses.
+func test_take_back_build() -> void:
+	var game := DeckhandGame.new()
+	game.setup([{"name": "A", "bot": false}, {"name": "B", "bot": true}, {"name": "C", "bot": true}], 5, {})
+	game.start()
+	var guard := 0
+	while not (game.phase == DeckhandGame.Phase.BUILD and game.pending.has(0) and game.pending.has(1)) and guard < 500:
+		guard += 1
+		var q: int = game.pending.keys()[0]
+		game.submit(q, DeckhandBot.decide(game, q))
+	var decision: Dictionary = game.pending[0]
+	check(not game.can_retract(0), "nothing to take back before choosing")
+	game.submit(0, {"pass": true})
+	check(game.can_retract(0) and not game.pending.has(0), "chosen: waiting on the others, can take back")
+	check(game.validate(0, {"retract": true}) == "", "a take-back is valid then")
+	check(game.submit(0, {"retract": true}) == "", "take back")
+	check(game.pending.get(0) == decision and not game.can_retract(0), "the same choice is asked again")
+	game.submit(0, DeckhandBot.decide(game, 0))
+	game.submit(1, DeckhandBot.decide(game, 1))
+	game.submit(2, DeckhandBot.decide(game, 2))
+	check(not game.can_retract(0), "all chosen: the builds are played")
+	check(game.submit(0, {"retract": true}) != "", "too late to take back")
 
 func check_conservation(game: DeckhandGame, seed_value: int) -> void:
 	var seen := {}

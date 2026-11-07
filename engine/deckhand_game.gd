@@ -59,6 +59,7 @@ var final_scores: Array[Dictionary] = []
 ## player index -> decision dictionary ({type: String, ...}).
 var pending: Dictionary = {}
 var _answers: Dictionary = {}
+var _answered: Dictionary = {} # player -> the group decision their answer is for
 var _queue: Array[Dictionary] = []
 var _running := false
 
@@ -108,6 +109,7 @@ func setup(seats: Array, seed_value: int = -1, game_options: Dictionary = {}) ->
 	final_scores.clear()
 	pending.clear()
 	_answers.clear()
+	_answered.clear()
 	_queue.clear()
 	round_index = 0
 	phase = Phase.SETUP
@@ -259,6 +261,8 @@ func priority_order(candidates: Array) -> Array[int]:
 ## Why `action` would be rejected for player `p`, or "" if it is valid.
 ## Changes nothing (online play checks a move before sending it).
 func validate(p: int, action: Dictionary) -> String:
+	if action.get("retract", false):
+		return _validate_retract(p)
 	if not pending.has(p):
 		return "No decision pending for this player"
 	var decision: Dictionary = pending[p]
@@ -266,6 +270,11 @@ func validate(p: int, action: Dictionary) -> String:
 
 ## Returns "" on success, otherwise why the action was rejected.
 func submit(p: int, action: Dictionary) -> String:
+	if action.get("retract", false):
+		var refused := _validate_retract(p)
+		if refused.is_empty():
+			_retract(p)
+		return refused
 	if not pending.has(p):
 		return "No decision pending for this player"
 	var decision: Dictionary = pending[p]
@@ -278,10 +287,26 @@ func submit(p: int, action: Dictionary) -> String:
 		_redraw_draft(p)
 	elif decision.get("group", false):
 		_answers[p] = action
+		_answered[p] = decision
 	else:
 		call("_answer_" + decision.type, p, decision, action)
 	_run()
 	return ""
+
+## Whether `p` may take back the build they chose: the others are still
+## choosing theirs (once all have, the builds are played at once).
+func can_retract(p: int) -> bool:
+	return _answers.has(p) and _answered.has(p) and _answered[p].type == "build"
+
+func _validate_retract(p: int) -> String:
+	return "" if can_retract(p) else "Too late: every pirate has chosen."
+
+## `p` takes back their build: the choice is theirs to make again.
+func _retract(p: int) -> void:
+	pending[p] = _answered[p]
+	_answers.erase(p)
+	_answered.erase(p)
+	changed.emit()
 
 func _ask(p: int, decision: Dictionary) -> void:
 	pending[p] = decision
@@ -397,6 +422,7 @@ func _task_hand_limit_resolve(_task: Dictionary) -> void:
 			_discard_windfall(p, action.get("windfall_dest", WINDFALL_DECK))
 		_log("%s discards down to %d cards." % [_name(p), HAND_LIMIT])
 	_answers.clear()
+	_answered.clear()
 
 func _task_game_end(_task: Dictionary) -> void:
 	phase = Phase.GAME_OVER
@@ -528,6 +554,7 @@ func _task_draft_resolve(_task: Dictionary) -> void:
 			discard_pile.append(d)
 		players[p].compass_draws = 0
 	_answers.clear()
+	_answered.clear()
 
 	var n := players.size()
 	var hands: Array = []
@@ -606,6 +633,7 @@ func _task_build_resolve(_task: Dictionary) -> void:
 			"" if paid == 0 else " (discarding %d)" % paid])
 		event.emit("build", {"player": p, "paid": paid})
 	_answers.clear()
+	_answered.clear()
 
 	# Solo variant: virtual opponents build a random card for free whenever someone builds.
 	if not builders.is_empty():
@@ -681,6 +709,7 @@ func _task_add_to_crew(task: Dictionary) -> void:
 
 func _task_effect(task: Dictionary) -> void:
 	var p: int = task.player
+	event.emit("effect", {"player": p, "effect": task.effect, "source": task.source})
 	match task.effect:
 		"draw-1", "draw-2":
 			var n := _draw_into_hand(p, 1 if task.effect == "draw-1" else 2)
@@ -703,7 +732,7 @@ func _task_effect(task: Dictionary) -> void:
 		"battle":
 			players[p].pending_battles += 1
 			_log("%s announces a Battle! It resolves on their next build." % _name(p))
-			event.emit("battle_announce", {"player": p})
+			event.emit("battle_announce", {"player": p, "source": task.source})
 		"compass":
 			pass # Passive: used during the draft.
 

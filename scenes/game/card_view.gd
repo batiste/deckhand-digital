@@ -18,6 +18,11 @@ const MARK_COLORS := {
 	Mark.FREE: Color(0.3, 0.92, 0.25),
 }
 
+## Rim halos: a claimable / claimed card (gold), a card whose effect is
+## being resolved (sea green).
+const CLAIM_HALO := Color(1.0, 0.78, 0.32)
+const ACTIVE_HALO := Color(0.3, 1.0, 0.82)
+
 ## Largest lean of a lifted card towards the pointer (radians).
 const MAX_TILT := 0.2
 
@@ -34,6 +39,14 @@ var face_up := true
 var mark := Mark.NONE:
 	set(value):
 		mark = value
+		_refresh_mark()
+## Its effect is being resolved: a halo runs round its rim (like a
+## claimable card's, in another colour).
+var active := false:
+	set(value):
+		if value == active:
+			return
+		active = value
 		_refresh_mark()
 var interactive := true
 ## Opacity of the drop shadow under the card (0 = none), for lifted cards.
@@ -296,8 +309,9 @@ func _refresh_mark() -> void:
 	_badge.visible = mark == Mark.PAYMENT or mark == Mark.SELECTED
 	if _badge.visible:
 		_badge.texture = _mark_badge(mark == Mark.SELECTED)
-	var claimable := mark == Mark.CLAIMABLE
+	var claimable := mark == Mark.CLAIMABLE or active
 	_set_param("shimmer", 1.0 if claimable else 0.0)
+	_set_param("shimmer_color", ACTIVE_HALO if active and mark != Mark.CLAIMABLE else CLAIM_HALO)
 	# Only a shimmering card needs TIME: the rest stay frozen, so they never
 	# force the screen to redraw (see Effects).
 	var material := _texture_rect.material as ShaderMaterial

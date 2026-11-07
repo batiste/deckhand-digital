@@ -21,6 +21,7 @@ uniform float sheen = -1.0;
 uniform float sheen_alpha = 0.0;
 // Claimable: a gold light running round the card edge.
 uniform float shimmer = 0.0;
+uniform vec3 shimmer_color = vec3(1.0, 0.78, 0.32);
 
 float rounded_box_sdf(vec2 p, vec2 half_size, float radius) {
 	vec2 q = abs(p) - (half_size - vec2(radius));
@@ -86,8 +87,7 @@ void fragment() {
 		float rim = smoothstep(-7.0, -2.5, sdf) * card_mask;
 		float angle = atan(local.y * card_half.x / card_half.y, local.x);
 		float spot = pow(0.5 + 0.5 * cos(angle - TIME * 1.6), 14.0) + 0.6 * pow(0.5 + 0.5 * cos(angle - TIME * 1.6 + 3.14159), 20.0);
-		vec3 gold = vec3(1.0, 0.78, 0.32);
-		rgb = mix(rgb, gold * (0.75 + 1.1 * spot), rim * shimmer * (0.55 + 0.45 * spot));
+		rgb = mix(rgb, shimmer_color * (0.75 + 1.1 * spot), rim * shimmer * (0.55 + 0.45 * spot));
 	}
 
 	if (burn > 0.0) {

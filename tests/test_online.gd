@@ -35,8 +35,18 @@ func _init() -> void:
 	check(anna._seat == 0 and ben._seat == 1 and anna.game.player_count() == 3, "both see 3 seats; Anna is seat 0, Ben seat 1")
 
 	var cut := false
+	var take_back := "" # "done" once Anna has taken back a build
 	var deadline := Time.get_ticks_msec() + 600 * 1000
 	while Time.get_ticks_msec() < deadline and not (_over(anna) and _over(ben)):
+		# Anna builds, then takes it back while Ben still chooses. (If Ben's
+		# build reached the relay first, it is refused: too late, on both.)
+		if take_back == "" and anna.game.can_retract(0) and not anna._retract_sent:
+			anna._take_back()
+			var settled := await _until(func() -> bool: return not anna._retract_sent and anna._applied == ben._applied, 10.0)
+			var back: bool = anna.game.pending.get(0, {}).get("type") == "build"
+			check(settled and anna.game.checksum() == ben.game.checksum() and anna.game.pending.keys() == ben.game.pending.keys(), "a take-back (%s) is played the same on both copies" % ("taken back" if back else "too late"))
+			if back:
+				take_back = "done"
 		for t: Control in [anna, ben]:
 			if t.game != null and t.game.pending.has(t._seat):
 				t._submit(DeckhandBot.decide(t.game, t._seat))
@@ -46,6 +56,7 @@ func _init() -> void:
 			var caught_up := await _until(func() -> bool: return ben._applied >= 60 and ben._applied == anna._applied, 20.0)
 			check(caught_up and ben.game.checksum() == anna.game.checksum(), "Ben reconnects and catches up to the same game")
 		await process_frame
+	check(take_back == "done", "a build was taken back during the game")
 	check(_over(anna) and _over(ben), "the game is played to the end online (%d actions)" % anna._applied)
 	check(anna._applied == ben._applied and anna.game.checksum() == ben.game.checksum(), "both copies end identical")
 	check(anna.game.final_scores == ben.game.final_scores, "same final scores: %s" % [anna.game.final_scores])
