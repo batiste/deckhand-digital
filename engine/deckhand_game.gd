@@ -808,13 +808,13 @@ func _validate_hook_target(_p: int, decision: Dictionary, action: Dictionary) ->
 func _answer_hook_target(p: int, decision: Dictionary, action: Dictionary) -> void:
 	_resolve_hook(p, action.target, decision.source)
 
-func _resolve_hook(p: int, target: int, _source: int) -> void:
+func _resolve_hook(p: int, target: int, source: int) -> void:
 	var their: Array[int] = players[target].hand
 	var stolen: int = their[rng.randi_range(0, their.size() - 1)]
 	their.erase(stolen)
 	players[p].hand.append(stolen)
 	_log("%s hooks a card from %s." % [_name(p), _name(target)])
-	event.emit("hook", {"player": p, "target": target, "card": stolen})
+	event.emit("hook", {"player": p, "target": target, "card": stolen, "source": source})
 	if symbol_count(p, "hooks") < 3:
 		_ask(p, {"type": "hook_give", "target": target, "stolen": stolen})
 
@@ -853,11 +853,11 @@ func _task_battle(task: Dictionary) -> void:
 	_log("Battle for %s: %s." % [_name(p), ", ".join(parts)])
 	if winner < 0:
 		_log("The Battle is a draw.")
-		event.emit("battle", {"player": p, "winner": -1, "scores": scores, "details": details, "count": task.count})
+		event.emit("battle", {"player": p, "winner": -1, "scores": scores, "details": details, "count": task.count, "battles": task.count})
 		return
 	var n := _draw_into_hand(winner, task.count)
 	_log("%s wins the Battle and draws %d." % [_name(winner), n])
-	event.emit("battle", {"player": p, "winner": winner, "scores": scores, "details": details, "count": n})
+	event.emit("battle", {"player": p, "winner": winner, "scores": scores, "details": details, "count": n, "battles": task.count})
 
 ## Tentacles break ties; returns -1 if still tied.
 func _break_tie(tied: Array[int]) -> int:

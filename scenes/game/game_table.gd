@@ -175,6 +175,7 @@ var _hold_choices := false # the round title is up: choices wait for it
 var _lost := {} # contested Infamy card id -> the tied players, until it is shown
 var _spotlights := 0 # Infamy cards (claimed or contested) still to show; choices wait
 var _in_spotlight := {} # card id -> true while shown mid-table (its table copy stays hidden)
+var _fresh := {} # card id -> true: hidden till now, to be dealt in as if new on the next refresh
 # Infamy cards entering the spotlight together, by the same pirate, are
 # shown side by side: {key, frame, ids, after, done}. Each group waits for
 # the one before it (`after`) to clear the table.
@@ -192,6 +193,10 @@ var _band_dismiss := Callable() # closes that band
 var _band_since := 0 # when it showed (msec): a click on the hand closes it, after a grace
 var _landing: Array = [] # your cards on their way to the crew: [{id, draws}]
 var _band_holds := 0 # bands (shown or queued) that hold the choices
+var _hooked_keep := {} # card id -> true: hooked from you, still shown in hand until its tug
+# Battle bands still waiting to show, that later Battles join.
+var _announce_batch: Variant = null # {counts: {player: n}}
+var _result_batch: Variant = null # {winner, scores, details, count, battles, drawn}
 var _shown := {} # player -> {vp, banners} last displayed, to animate gains
 var _fonts: Array[Font] = [] # keeps the fallback-patched fonts loaded
 
@@ -299,6 +304,9 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_spot_groups = []
 	_sent_build = {}
 	_landing.clear()
+	_hooked_keep.clear()
+	_announce_batch = null
+	_result_batch = null
 	_stage_now = _stage_next # whatever was queued is dropped
 	_stage_moved.emit()
 	_hold_choices = false
@@ -2315,6 +2323,10 @@ func _hand_entries() -> Array:
 	var built: int = pl.built_this_step
 	if built >= 0 and not pl.crew.has(built) and not pl.hand.has(built):
 		entries.append({"id": built, "building": true})
+	# Hooked from you, but its turn on the table has not come yet.
+	for id: int in _hooked_keep:
+		if not pl.hand.has(id):
+			entries.append({"id": id, "hooked": true})
 	return entries
 
 func _render_hand() -> void:
@@ -2331,7 +2343,7 @@ func _render_hand() -> void:
 		var id: int = entry.id
 		var view := _card(id, HAND_CARD)
 		view.set_meta("windfall", entry.get("windfall", false))
-		view.set_meta("building", entry.get("building", false))
+		view.set_meta("building", entry.get("building", false) or entry.get("hooked", false))
 		if entry.get("windfall", false):
 			view.set_caption("Windfall (2 coins)")
 		elif entry.get("picked", false):
@@ -3189,7 +3201,7 @@ func _capture_cards() -> Dictionary:
 	for id: int in flying:
 		poses[id] = flying[id].pose
 	for view in _card_views:
-		if is_instance_valid(view) and view.is_inside_tree() and view.is_visible_in_tree() and not poses.has(view.card_id) and not _in_spotlight.has(view.card_id):
+		if is_instance_valid(view) and view.is_inside_tree() and view.is_visible_in_tree() and not poses.has(view.card_id) and not _in_spotlight.has(view.card_id) and not _fresh.has(view.card_id):
 			var pose := CardMotion.pose_of(view, view.face_up)
 			pose.zone = _zone_of(view)
 			poses[view.card_id] = pose
@@ -3229,6 +3241,7 @@ func _animate_cards(snapshot: Dictionary) -> void:
 	var generation := _motion_gen
 	var poses: Dictionary = snapshot.poses
 	var anchors: Dictionary = snapshot.anchors
+	_fresh.clear() # the snapshot was taken without them
 	var flying: Dictionary = snapshot.flying
 	var present := {}
 	var moving: Array[CardView] = []
@@ -3339,12 +3352,19 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 ##   on_close: called once the band has gone.
 ##   read_time: how long it stays (with ok; default BAND_READ_TIME).
 ##   after_landing: waits for your cards on their way to the crew first.
+##   icon: an icon name (assets/icons) shown on both sides of the title.
+##   compose: called when the band's turn comes; returns {title, subtitle}
+##     and any options above, overriding the ones given.
 func _band(title_text: String, color: Color, subtitle: String, delay: float, hold: bool, opts: Dictionary = {}) -> void:
 	var ok: bool = opts.get("ok", false)
 	var read_time: float = opts.get("read_time", BAND_READ_TIME)
 	if hold:
 		_band_holds += 1
 		_hold_choices = true
+	if opts.has("compose"):
+		await get_tree().process_frame # what comes in together, together
+		if not is_inside_tree():
+			return
 	if opts.get("after_landing", false):
 		await _landings_done() # before the ticket (see _hook_ceremony)
 		if not is_inside_tree():
@@ -3353,6 +3373,13 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	await _stage_wait(ticket)
 	if not is_inside_tree():
 		return
+	var compose: Callable = opts.get("compose", Callable())
+	if compose.is_valid():
+		# Made now, on its turn: what came in meanwhile is merged in.
+		var made: Dictionary = compose.call()
+		title_text = made.get("title", title_text)
+		subtitle = made.get("subtitle", subtitle)
+		opts.merge(made, true)
 	var layer := CanvasLayer.new()
 	layer.layer = 6
 	add_child(layer)
@@ -3391,7 +3418,29 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_outline_color", Color(0.1, 0.05, 0.02))
 	title.add_theme_constant_override("outline_size", 8)
-	lines.add_child(title)
+	var title_node: Control = title # what slides in
+	var icon_name: String = opts.get("icon", "")
+	if icon_name.is_empty():
+		lines.add_child(title)
+	else:
+		# The title between two of its icons.
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.mouse_filter = MOUSE_FILTER_IGNORE
+		row.add_theme_constant_override("separation", 22)
+		for i in range(2):
+			var icon := TextureRect.new()
+			icon.texture = load(ICONS + icon_name + ".png")
+			icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			icon.custom_minimum_size = Vector2(56, 56)
+			icon.size_flags_vertical = SIZE_SHRINK_CENTER
+			icon.mouse_filter = MOUSE_FILTER_IGNORE
+			row.add_child(icon)
+			if i == 0:
+				row.add_child(title)
+		lines.add_child(row)
+		title_node = row
 	var extra: Control = opts.get("extra")
 	if extra != null:
 		extra.size_flags_horizontal = SIZE_SHRINK_CENTER
@@ -3407,7 +3456,7 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	tween.tween_interval(delay)
 	tween.tween_property(band, "modulate:a", 1.0, 0.25)
 	tween.parallel().tween_property(band, "scale:y", 1.0, 0.3).from(0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tween.parallel().tween_property(title, "position:x", 0.0, 0.5).from(-60.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(title_node, "position:x", title_node.position.x, 0.5).from(title_node.position.x - 60.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tween.tween_interval(read_time if ok else (1.1 if hold else 1.8))
 	tween.tween_property(band, "modulate:a", 0.0, 0.45)
 	tween.tween_callback(layer.queue_free)
@@ -3509,41 +3558,96 @@ const BAND_READ_TIME := 5.0
 func _band_up() -> bool:
 	return is_instance_valid(_title_layer) and _title_layer.is_inside_tree()
 
-## A Battle is announced: when and how it will be fought.
+## A Battle is announced: when and how it will be fought. Battles announced
+## before the band shows share it.
 func _battle_announced(p: int) -> void:
-	var when := "your next build" if p == _seat else "%s's next build" % _who(p)
-	var text := "On [b]%s[/b], whoever builds the best card draws a card." % when
-	_band("You announce a Battle!" if p == _seat else "A Battle is announced!", Color(1.0, 0.55, 0.4), text, 0.0, false, {"ok": true, "after_landing": true})
+	if _announce_batch != null:
+		_announce_batch.counts[p] = _announce_batch.counts.get(p, 0) + 1
+		return
+	var batch := {"counts": {p: 1}}
+	_announce_batch = batch
+	_band("", BATTLE_COLOR, "", 0.0, false, {"ok": true, "after_landing": true, "icon": "fx-battle",
+		"compose": func() -> Dictionary:
+			if is_same(_announce_batch, batch):
+				_announce_batch = null
+			return _announce_text(batch.counts),
+	})
 
-## A Battle is fought: each builder's score, and who wins.
-func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, details: Dictionary = {}) -> void:
+## The announcement band for Battles by pirate ({player: count}).
+func _announce_text(counts: Dictionary) -> Dictionary:
+	var total := 0
+	for q: int in counts:
+		total += counts[q]
 	var title: String
-	var outcome: String
-	var cards := "%d card%s" % [count, "" if count == 1 else "s"]
-	if winner < 0:
-		title = "Battle: a tie"
-		outcome = "Nobody draws."
-	elif winner == _seat:
-		title = "You win the Battle!"
-		outcome = "[color=#ffd36b]You draw %s.[/color]" % cards
+	if total == 1:
+		title = "You announce a Battle!" if counts.has(_seat) else "A Battle is announced!"
 	else:
-		title = "%s wins the Battle" % game.players[winner].name
-		outcome = "%s draws %s." % [_who(winner), cards]
-	if winner >= 0 and scores.values().count(scores[winner]) > 1:
-		outcome = "Tie broken by Tentacles. " + outcome
-	# Cards you draw stay hidden in your hand until the band has gone, then
-	# come from the Supply.
+		title = "%d Battles are announced!" % total
+	var whens: Array[String] = []
+	for q: int in counts:
+		var when := "[b]your next build[/b]" if q == _seat else "[b]%s's next build[/b]" % _who(q)
+		if counts[q] > 1:
+			when += " (%d Battles)" % counts[q]
+		whens.append(when)
+	var list := ", ".join(whens.slice(0, -1)) + " and " + whens[-1] if whens.size() > 1 else whens[0]
+	if total == 1:
+		return {"title": title, "subtitle": "On %s, whoever builds the best card draws a card." % list}
+	return {"title": title, "subtitle": "On %s.\nEach time, whoever builds the best card draws a card." % list}
+
+## A Battle is fought: each builder's score, and who wins. Battles fought
+## together (same build: same cards, same winner) share one band, the cards
+## drawn added up.
+## `count`: the cards drawn; `battles`: how many Battles were fought (a
+## pirate's Battles announced together are fought at once).
+func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, details: Dictionary = {}, battles: int = 1) -> void:
+	# Cards you draw (the last ones in your hand) stay hidden until the band
+	# has gone, then come from the Supply.
 	var drawn: Array = []
 	if winner == _seat and count > 0:
 		var hand: Array = game.players[_seat].hand
 		drawn = hand.slice(max(0, hand.size() - count))
 		for id: int in drawn:
 			_in_spotlight[id] = true
-	_band(title, Color(1.0, 0.55, 0.4), "", 0.0, false, {
-		"ok": true, "after_landing": true, "extra": _battle_table(winner, scores, details), "footer": outcome,
+	if _result_batch != null:
+		_result_batch.count += count
+		_result_batch.battles += battles
+		_result_batch.drawn.append_array(drawn)
+		return
+	var batch := {"winner": winner, "scores": scores, "details": details, "count": count, "battles": battles, "drawn": drawn}
+	_result_batch = batch
+	_band("", BATTLE_COLOR, "", 0.0, false, {"ok": true, "after_landing": true, "icon": "fx-battle",
 		"read_time": BAND_READ_TIME * 1.3, # a table to read
-		"on_close": func() -> void: _deal_from_supply(drawn),
+		"compose": func() -> Dictionary:
+			if is_same(_result_batch, batch):
+				_result_batch = null
+			return _result_band(batch),
 	})
+
+## The result band for a batch of Battles fought together.
+func _result_band(batch: Dictionary) -> Dictionary:
+	var winner: int = batch.winner
+	var scores: Dictionary = batch.scores
+	var count: int = batch.count
+	var many: bool = batch.battles > 1
+	var cards := "%d card%s" % [count, "" if count == 1 else "s"]
+	var title: String
+	var outcome: String
+	if winner < 0:
+		title = "%d Battles: a tie" % batch.battles if many else "Battle: a tie"
+		outcome = "Nobody draws."
+	elif winner == _seat:
+		title = "You win %d Battles!" % batch.battles if many else "You win the Battle!"
+		outcome = "[color=#ffd36b]You draw %s.[/color]" % cards
+	else:
+		var name: String = game.players[winner].name
+		title = "%s wins %d Battles" % [name, batch.battles] if many else "%s wins the Battle" % name
+		outcome = "%s draws %s." % [_who(winner), cards]
+	if winner >= 0 and scores.values().count(scores[winner]) > 1:
+		outcome = "Tie broken by Tentacles. " + outcome
+	return {"title": title, "extra": _battle_table(winner, scores, batch.details), "footer": outcome,
+		"on_close": func() -> void: _deal_from_supply(batch.drawn)}
+
+const BATTLE_COLOR := Color(1.0, 0.55, 0.4)
 
 ## Cards already in your hand, hidden meanwhile, dealt in from the Supply
 ## (the refresh deals a hand card it had not seen from its deck).
@@ -3552,6 +3656,7 @@ func _deal_from_supply(ids: Array) -> void:
 		return
 	for id: int in ids:
 		_in_spotlight.erase(id)
+		_fresh[id] = true # on the table all along, hidden: not "stayed put"
 	_queue_refresh()
 	_sfx.play("card_deal", -2.0)
 
@@ -3575,7 +3680,10 @@ func _await_landing(id: int) -> void:
 		await get_tree().process_frame
 		if not is_inside_tree():
 			return
-		waited += get_process_delta_time()
+		# Waiting its turn to be shown mid-table moves with the stage, which
+		# always moves on: only the rest counts towards the timeout.
+		if not (_claimed.has(id) or _in_spotlight.has(id)):
+			waited += get_process_delta_time()
 	if not _landing.has(gate):
 		return # a new game started meanwhile
 	_landing.erase(gate)
@@ -3606,6 +3714,16 @@ func _battle_table(winner: int, scores: Dictionary, details: Dictionary) -> Grid
 	var headers: Array = ["Pirate", "Card built", "Value", "Battle bonus", "Total"] if not details.is_empty() else ["Pirate", "Total"]
 	grid.columns = headers.size()
 	for i in range(headers.size()):
+		if headers[i] == "Battle bonus":
+			# +1 per Battle symbol in the crew: the symbol itself.
+			var rich := _rich(15)
+			rich.fit_content = true
+			rich.autowrap_mode = TextServer.AUTOWRAP_OFF
+			rich.mouse_filter = MOUSE_FILTER_IGNORE
+			rich.add_theme_color_override("default_color", muted)
+			rich.text = "[center]+1 per %s[/center]" % _img("fx-battle", 16)
+			grid.add_child(rich)
+			continue
 		var head := _label(headers[i], 15, muted)
 		head.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if i < 2 else HORIZONTAL_ALIGNMENT_CENTER
 		grid.add_child(head)
@@ -3670,12 +3788,17 @@ func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 ## Cards with the same `key` (the claimer; -1 when contested) arriving
 ## together share the table; other keys get their own turn, one after another.
 ## `ticket`: a stage ticket already taken for it (else it takes one).
-func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable, reveal_in_place: bool = true, holder: CardView = null, fly_time: float = 0.85, ticket: int = -1) -> void:
+## `companion`: a card shown beside it, a hook between them (the card that
+## hooked it).
+func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable, reveal_in_place: bool = true, holder: CardView = null, fly_time: float = 0.85, ticket: int = -1, companion: int = -1, show_time: float = 1.7) -> void:
 	# A card claimed as it is revealed first turns over where it lies, and
 	# stays there a moment, so everyone sees what came up. (Otherwise it
 	# turns over on its way to the middle.)
 	var revealed: CardView = null
 	var shown_at := Time.get_ticks_msec()
+	# A claimed card glows gold from the moment it is claimed, even while it
+	# waits its turn on stage.
+	var claimed := key >= 0 and key < HOOK_SPOT_KEY
 	if holder != null:
 		# A copy already on show where the card starts (a hooked card): it
 		# stays until the flight starts.
@@ -3691,8 +3814,21 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 		revealed.rotation = from.rotation
 		_motion.add_child(revealed)
 		_sfx.play("card_flip", -4.0)
-		_motion.fly(id, from, up, {"target": revealed, "duration": 0.45, "arc": 0.0, "lift": 0.12})
+		_motion.fly(id, from, up, {"target": revealed, "duration": 0.45, "arc": 0.0, "lift": 0.12, "glow": claimed})
 		from = up
+	else:
+		# A copy stays where the card lay while it waits its turn on stage,
+		# so it does not vanish from the table meanwhile.
+		revealed = CardView.make(id, from.size, from.face_up)
+		revealed.interactive = false
+		revealed.mouse_filter = MOUSE_FILTER_IGNORE
+		revealed.position = from.center - from.size / 2.0
+		revealed.rotation = from.rotation
+		_motion.add_child(revealed)
+		shown_at -= 10000
+	if claimed and holder == null:
+		revealed.mark = CardView.Mark.CLAIMABLE
+		revealed.z_index = 1
 	var now := Engine.get_process_frames()
 	_spot_groups = _spot_groups.filter(func(g: Dictionary) -> bool: return g.frame == now)
 	var group: Dictionary = {}
@@ -3734,6 +3870,28 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	var card_size := Vector2(240, 326)
 	var spacing := card_size.x + 70.0
 	var center := Vector2(screen.x / 2.0 + (slot - (ids.size() - 1) / 2.0) * spacing, screen.y / 2.0 - 50.0)
+	var extras: Array[Control] = [] # the companion and its hook: they come and go with the caption
+	if companion >= 0 and ids.size() == 1:
+		var pair := (card_size.x + PAIR_GAP) / 2.0
+		center.x = screen.x / 2.0 + pair
+		var other := CardView.make(companion, card_size)
+		other.interactive = false
+		other.mouse_filter = MOUSE_FILTER_IGNORE
+		other.position = Vector2(screen.x / 2.0 - pair, center.y) - card_size / 2.0
+		other.pivot_offset = card_size / 2.0
+		layer.add_child(other)
+		var hook := TextureRect.new()
+		hook.texture = load(ICONS + "fx-hook.png")
+		hook.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		hook.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		hook.mouse_filter = MOUSE_FILTER_IGNORE
+		hook.size = Vector2(84, 84)
+		hook.pivot_offset = hook.size / 2.0
+		hook.position = Vector2(screen.x / 2.0, center.y) - hook.size / 2.0
+		layer.add_child(hook)
+		extras.append_array([other, hook])
+		for node: Control in extras:
+			node.modulate.a = 0.0
 	var view := CardView.make(id, card_size)
 	view.interactive = false
 	view.mouse_filter = MOUSE_FILTER_IGNORE
@@ -3746,10 +3904,11 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	caption.mouse_filter = MOUSE_FILTER_IGNORE
 	var caption_width := 640.0 if ids.size() == 1 else spacing - 10.0
 	caption.custom_minimum_size.x = caption_width
+	var caption_x := screen.x / 2.0 if not extras.is_empty() else center.x
 	caption.add_theme_color_override("font_outline_color", Color(0.08, 0.04, 0.02))
 	caption.add_theme_constant_override("outline_size", 6)
 	caption.text = caption_text
-	caption.position = Vector2(center.x - caption_width / 2.0, center.y + card_size.y / 2.0 + 18.0)
+	caption.position = Vector2(caption_x - caption_width / 2.0, center.y + card_size.y / 2.0 + 18.0)
 	caption.modulate.a = 0.0
 	layer.add_child(caption)
 
@@ -3759,14 +3918,19 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	_motion.fly(id, from, to, {"target": view, "duration": fly_time, "lift": 0.25, "arc": 70.0})
 	var tween := create_tween()
 	tween.tween_property(dim, "modulate:a", 1.0, 0.4)
+	for node: Control in extras:
+		tween.parallel().tween_property(node, "modulate:a", 1.0, 0.4)
+		tween.parallel().tween_property(node, "scale", Vector2.ONE, 0.4).from(Vector2(0.85, 0.85)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.tween_interval(0.5)
 	tween.tween_property(caption, "modulate:a", 1.0, 0.3)
-	tween.tween_interval(1.7 + slot * gap)
+	tween.tween_interval(show_time + slot * gap)
 	tween.tween_callback(func() -> void:
 		var pose := CardMotion.pose_of(view, true)
 		view.visible = false
 		finish.call(pose))
 	tween.tween_property(caption, "modulate:a", 0.0, 0.4)
+	for node: Control in extras:
+		tween.parallel().tween_property(node, "modulate:a", 0.0, 0.4)
 	# The dim lifts once the last card of the group has left.
 	tween.parallel().tween_property(dim, "modulate:a", 0.0, 0.6).set_delay(later)
 	tween.tween_callback(func() -> void:
@@ -3781,30 +3945,28 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 ## contested cards (-1).
 const HOOK_SPOT_KEY := 1000
 
-## A Hook that touches you: the card taken shown mid-table, like an Infamy
-## card. Stolen from you, it leaves your hand for the middle, then the thief's
-## hand; stolen by you, it comes from the victim, turning over, to your hand.
-func _hook_ceremony(id: int, thief: int, victim: int) -> void:
+## A Hook that touches you: the card taken shown mid-table, beside the card
+## that took it (a hook between them). Stolen from you, it is yanked out of
+## your hand, then the thief's; stolen by you, it comes from the victim,
+## turning over, to your hand. It waits for cards on their way to a crew to
+## land first (and a moment more), so one thing moves at a time.
+func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 	var keeps: bool = game.symbol_count(thief, "hooks") >= 3
 	var title: String
 	var note: String
 	var from: Dictionary
-	var tugged: CardView = null
 	if victim == _seat:
-		var held := _hand_view(id)
-		if held == null:
+		if _hand_view(id) == null:
 			return
-		from = CardMotion.pose_of(held, true)
-		held.modulate.a = 0.0
-		tugged = _hooked_copy(id, from) # still where it was, until its turn
+		_hooked_keep[id] = true # stays in your hand until its turn
 		title = "[color=#ff8a70]%s hooks your card![/color]" % _who(thief)
 		note = "With 3 Hooks, they keep it." if keeps else "They must give you a card back."
 	else:
+		_in_spotlight[id] = true # hidden in your hand meanwhile
 		from = _opp_pose(victim)
 		title = "[color=#ffd36b]You hook it from %s![/color]" % _who(victim)
 		note = "With 3 Hooks, you keep it." if keeps else "Now choose a card to give back."
 	var caption := "[center][font_size=%d][b]%s[/b][/font_size]\n%s[/center]" % [_fs(30), title, note]
-	_in_spotlight[id] = true
 	_spotlights += 1
 	_hold_choices = true
 	if thief == _seat:
@@ -3816,12 +3978,25 @@ func _hook_ceremony(id: int, thief: int, victim: int) -> void:
 			return
 	# Each Hook gets the table to itself, after whatever came before it.
 	var ticket := _stage_take()
-	if tugged != null:
-		await _stage_wait(ticket)
-		if not is_instance_valid(tugged) or not is_inside_tree():
+	await _stage_wait(ticket)
+	if not is_inside_tree():
+		return
+	await _crew_settled()
+	if not is_inside_tree():
+		return
+	var tugged: CardView = null
+	if victim == _seat:
+		var held := _hand_view(id)
+		_hooked_keep.erase(id)
+		if held == null:
 			_stage_leave(ticket)
 			_hook_abandoned(id)
 			return
+		from = CardMotion.pose_of(held, true)
+		_in_spotlight[id] = true
+		held.modulate.a = 0.0
+		tugged = _hooked_copy(id, from)
+		_queue_refresh() # out of the hand now (no flight: it is in the spotlight)
 		# Yanked out of the hand first; then slowly hauled to the middle.
 		_hook_tug(tugged)
 		await get_tree().create_timer(HOOK_TUG_TIME).timeout
@@ -3843,15 +4018,47 @@ func _hook_ceremony(id: int, thief: int, victim: int) -> void:
 		_motion.fly(id, pose, CardMotion.pose_of(target, true), {
 			"target": target, "zone": "hand", "duration": 0.8, "lift": 0.08, "arc": 40.0, "glow": true,
 		})
-	_spotlight(id, from, caption, HOOK_SPOT_KEY + ticket, finish, false, tugged, 1.3 if tugged != null else 0.85, ticket)
+	_spotlight(id, from, caption, HOOK_SPOT_KEY + ticket, finish, false, tugged, HOOK_HAUL_TIME if tugged != null else 0.85, ticket, source, HOOK_SHOW_TIME)
 
-const HOOK_TUG_TIME := 0.9
+## Waits until no card is on its way to a crew (yours landing, your build
+## still to join, any flight to a crew), then a moment more. A card shown
+## mid-table first (a claim) is not waited for: it needs the stage.
+func _crew_settled() -> void:
+	var waited := 0.0
+	while is_inside_tree() and waited < CREW_SETTLE_TIMEOUT and _crew_moving():
+		await get_tree().process_frame
+		waited += get_process_delta_time()
+	if is_inside_tree():
+		await get_tree().create_timer(CREW_SETTLE_PAUSE).timeout
+
+const CREW_SETTLE_PAUSE := 0.5
+const CREW_SETTLE_TIMEOUT := 6.0
+
+func _crew_moving() -> bool:
+	for gate: Dictionary in _landing:
+		if not (_claimed.has(gate.id) or _in_spotlight.has(gate.id)):
+			return true
+	var pl: Dictionary = game.players[_seat]
+	var built: int = pl.built_this_step
+	if game.phase == DeckhandGame.Phase.BUILD and built >= 0 and not pl.crew.has(built):
+		return true # your build joins once the cards before it are in
+	var flights := _motion.in_flight()
+	for fid: int in flights:
+		if flights[fid].zone in ["crew", "opponents"]:
+			return true
+	return false
+
+const HOOK_TUG_TIME := 0.6
+const HOOK_HAUL_TIME := 0.9 # from your hand to the middle
+const HOOK_SHOW_TIME := 1.3 # on show mid-table (an Infamy card: 1.7)
+const PAIR_GAP := 150.0 # between a stolen card and the card that hooked it
 
 ## A Hook ceremony that could not be shown: lets go of what it held.
 func _hook_abandoned(id: int) -> void:
 	if not is_inside_tree():
 		return
 	_in_spotlight.erase(id)
+	_hooked_keep.erase(id)
 	_spotlights -= 1
 	_release_hold()
 
@@ -3888,26 +4095,35 @@ func _hook_tug(ghost: CardView) -> void:
 	tween.parallel().tween_property(ghost, "position", up + Vector2(0.0, -14.0), 0.2)
 
 ## A card the Hook's thief gives back to you: it waits for the steal to be
-## shown, then sails from their seat into your hand.
+## shown, a moment for effect, then sails from their seat into your hand.
+## Your choices wait for it.
 func _receive_gift(id: int, giver: int) -> void:
 	_in_spotlight[id] = true # hidden in the hand meanwhile
+	_spotlights += 1
+	_hold_choices = true
 	var ticket := _stage_take()
 	await get_tree().process_frame # the hand is laid out
 	await _stage_wait(ticket)
 	if not is_inside_tree():
 		return
+	await get_tree().create_timer(GIFT_PAUSE).timeout
+	if not is_inside_tree():
+		return
 	_in_spotlight.erase(id)
 	var target := _hand_view(id)
-	if target == null:
-		_stage_leave(ticket)
-		return
-	_sfx.play("card_deal", -2.0)
-	_motion.fly(id, _opp_pose(giver), CardMotion.pose_of(target, true), {
-		"target": target, "zone": "hand", "duration": 1.0, "lift": 0.3, "arc": 110.0, "glow": true,
-	})
-	# The next moment may start as it lands.
-	await get_tree().create_timer(0.8).timeout
+	if target != null:
+		_sfx.play("card_deal", -2.0)
+		_motion.fly(id, _opp_pose(giver), CardMotion.pose_of(target, true), {
+			"target": target, "zone": "hand", "duration": 0.8, "lift": 0.3, "arc": 110.0, "glow": true,
+		})
+		await get_tree().create_timer(0.8).timeout
+		if not is_inside_tree():
+			return
 	_stage_leave(ticket)
+	_spotlights -= 1
+	_release_hold()
+
+const GIFT_PAUSE := 0.5
 
 func _stage_take() -> int:
 	_stage_next += 1
@@ -4026,7 +4242,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"hook":
 			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
 			if _seat in [p, info.target] and info.has("card"):
-				_hook_ceremony(info.card, p, info.target)
+				_hook_ceremony(info.card, p, info.target, info.get("source", -1))
 		"hook_give":
 			if p == _seat:
 				_gifts[info.card] = true
@@ -4037,7 +4253,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_battle_announced(p)
 		"battle":
 			_sfx.play("battle")
-			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1), info.get("details", {}))
+			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1), info.get("details", {}), info.get("battles", 1))
 		"claim":
 			_sfx.play("claim", volume)
 			_claimed[info.card] = p

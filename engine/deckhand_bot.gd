@@ -55,7 +55,10 @@ static func decide(game: DeckhandGame, p: int) -> Dictionary:
 		"hook_target":
 			return {"target": _richest(game, decision.targets)}
 		"hook_give":
-			return {"card": _worst(game, p, game.players[p].hand)}
+			# Any card may go back, but handing back the one just taken
+			# looks like nothing happened: only when there is no other.
+			var others: Array = game.players[p].hand.filter(func(id: int) -> bool: return id != decision.stolen)
+			return {"card": _worst(game, p, others if not others.is_empty() else game.players[p].hand)}
 		"hand_limit":
 			return _hand_limit(game, p, decision.count)
 	push_error("Bot cannot answer %s" % decision.type)
