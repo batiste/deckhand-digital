@@ -30,7 +30,7 @@ not licensed for any use.
 - **Sound effects** (`assets/sfx/`): synthesized by `tools/make_sfx.py`, under
   the MIT License like the code.
 - **Fonts** (`scenes/shared/fonts/`): under their own licenses, included next
-  to each font. Signika: SIL Open Font License 1.1. DejaVu: the
-  Bitstream Vera / DejaVu license.
+  to each font. Signika and IM FELL English: SIL Open Font License
+  1.1. DejaVu: the Bitstream Vera / DejaVu license.
 
 To ask for permission: [tidale.org](https://tidale.org/deckhand-race-for-infamy/).

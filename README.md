@@ -167,7 +167,7 @@ python3 tools/make_sfx.py   # synthesizes assets/sfx/*.wav
 - **Playtesting:** Jessica Gibbons, Gaël Nardin, Jonathan Bieler, Eduard Schäli, Riccardo Zoppello, Lucas Clark, the Break My Game community, and many others
 - **Music:** composed with Suno
 - **Sound effects:** synthesised by `tools/make_sfx.py`
-- **Typefaces:** Signika by Anna Giedryś, under the SIL Open Font License; DejaVu Sans (symbols), under the Bitstream Vera / DejaVu license (each license is next to its font in `scenes/shared/fonts/`)
+- **Typefaces:** Signika by Anna Giedryś, and IM FELL English by Igino Marini (titles), under the SIL Open Font License; DejaVu Sans (symbols), under the Bitstream Vera / DejaVu license (each license is next to its font in `scenes/shared/fonts/`)
 - **Engine:** [Godot Engine](https://godotengine.org)
 
 The illustrations, card faces and backs, icons, logos and music are

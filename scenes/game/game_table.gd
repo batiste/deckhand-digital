@@ -8,7 +8,9 @@ const ABSENT_GRACE := 15.0
 const ICONS := "res://assets/icons/"
 const FONT_REGULAR := "res://scenes/shared/fonts/signika/Signika-Regular.ttf"
 const FONT_BOLD := "res://scenes/shared/fonts/signika/Signika-SemiBold.ttf"
-# Signika lacks symbols like ✓ ★ ● ↻; desktop falls back to system fonts, the web export has none.
+## Big moments only (bands, what is shown mid-table): as the printed rules' titles.
+const FONT_TITLE := "res://scenes/shared/fonts/imfell/IMFellEnglish-Regular.ttf"
+# The text font lacks symbols like ✓ ★ ● ↻; desktop falls back to system fonts, the web export has none.
 const FONT_SYMBOLS := "res://scenes/shared/fonts/dejavu/DejaVuSans-Symbols.ttf"
 
 const HAND_CARD := Vector2(172, 235)
@@ -215,7 +217,7 @@ func _ready() -> void:
 	CardDB.ensure_loaded()
 	# Held in _fonts: an unreferenced font drops out of the resource cache, and
 	# the next load() would return a fresh copy without the fallback.
-	for path in [FONT_REGULAR, FONT_BOLD]:
+	for path in [FONT_REGULAR, FONT_BOLD, FONT_TITLE]:
 		var font: FontFile = load(path)
 		if font.fallbacks.is_empty():
 			font.fallbacks = [load(FONT_SYMBOLS)]
@@ -894,7 +896,7 @@ const CREDITS := [
 	["Playtesting", ["Jessica Gibbons", "Gaël Nardin", "Jonathan Bieler", "Eduard Schäli", "Riccardo Zoppello", "Lucas Clark", "the Break My Game community", "and many others"]],
 	["Music", ["Composed with Suno"]],
 	["Sound effects", ["Synthesised for this game"]],
-	["Typeface", ["Signika, by Anna Giedryś (SIL Open Font License)", "DejaVu Sans symbols (Bitstream Vera License)"]],
+	["Typefaces", ["Signika by Anna Giedryś", "IM FELL English by Igino Marini", "DejaVu Sans"]],
 	["Engine", ["Made with the Godot Engine"]],
 ]
 
@@ -1189,6 +1191,12 @@ func _build_credits() -> void:
 	link.add_theme_color_override("font_hover_color", Color(1, 0.93, 0.7))
 	link.add_theme_color_override("font_pressed_color", GOLD)
 	about.add_child(link)
+	# Whose the art is, and what may be reused.
+	var rights := _rich(14)
+	rights.fit_content = true
+	rights.add_theme_color_override("default_color", Color(0.85, 0.78, 0.65))
+	rights.text = "[center]Art, icons, logos and music © Batiste Bieler / Tidale, all rights reserved. Code: MIT License.[/center]"
+	v.add_child(rights)
 	var close := _button("Close", func() -> void: _credits.visible = false)
 	close.size_flags_horizontal = SIZE_SHRINK_CENTER
 	v.add_child(close)
@@ -2189,6 +2197,10 @@ static func _even_lines(items: Array[String], widths: Array[float], room: float)
 		out += items[i]
 		line_width += widths[i]
 	return out
+
+## `text` (BBCode allowed) in the title font.
+static func _fancy(text: String) -> String:
+	return "[font=%s]%s[/font]" % [FONT_TITLE, text]
 
 ## `bbcode` with a tooltip `text` on hover (in a label set up by _with_tips()).
 static func _tip(text: String, bbcode: String) -> String:
@@ -3809,7 +3821,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	lines.mouse_filter = MOUSE_FILTER_IGNORE
 	lines.add_theme_constant_override("separation", 14 if ok else 4)
 	band.add_child(lines)
-	var title := _label(title_text, 46, color, true)
+	var title := _label(title_text, 46, color)
+	title.add_theme_font_override("font", load(FONT_TITLE))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_outline_color", Color(0.1, 0.05, 0.02))
 	title.add_theme_constant_override("outline_size", 8)
@@ -4288,7 +4301,7 @@ func _battle_table(winner: int, scores: Dictionary, details: Dictionary) -> Grid
 func _spotlight_claim(id: int, from: Dictionary, claimer: int) -> void:
 	_in_spotlight[id] = true
 	var who := "You claim it!" if claimer == _seat else "%s claims it!" % _who(claimer)
-	var caption := "[center][font_size=%d][b][color=#ffd36b]%s[/color][/b][/font_size][/center]" % [_fs(30), who]
+	var caption := "[center][font_size=%d][color=#ffd36b]%s[/color][/font_size][/center]" % [_fs(30), _fancy(who)]
 	_spotlight(id, from, caption, claimer, func(pose: Dictionary) -> void:
 		_in_spotlight.erase(id)
 		# The card's place in its new crew, as laid out now.
@@ -4378,7 +4391,7 @@ func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 	for p: int in rivals:
 		names.append(_who(p))
 	var tied := " and ".join(names) if names.size() < 3 else ", ".join(names.slice(0, -1)) + " and " + names[-1]
-	var caption := "[center][font_size=%d][b][color=#ff8a70]Contested![/color][/b][/font_size]\n%s tie for it: nobody claims it.[/center]" % [_fs(32), tied]
+	var caption := "[center][font_size=%d][color=#ff8a70]%s[/color][/font_size]\n%s tie for it: nobody claims it.[/center]" % [_fs(32), _fancy("Contested!"), tied]
 	_spotlight(id, from, caption, -1, func(pose: Dictionary) -> void:
 		_sfx.play("burn")
 		_motion.burn(id, pose), true, null, 0.85, -1, -1, CONTESTED_SHOW_TIME)
@@ -4571,7 +4584,7 @@ func _present_windfall() -> void:
 	var pile: CardView = _pile_views.get("infamy")
 	if is_instance_valid(pile) and pile.is_inside_tree():
 		from = CardMotion.pose_of(pile, false)
-	var caption := "[center][font_size=%d][b][color=#ffd36b]Your Windfall[/color][/b][/font_size]\nIt stays in your hand: discard it to pay 2 coins when you build.[/center]" % _fs(30)
+	var caption := "[center][font_size=%d][color=#ffd36b]%s[/color][/font_size]\nIt stays in your hand: discard it to pay 2 coins when you build.[/center]" % [_fs(30), _fancy("Your Windfall")]
 	_spotlight(id, from, caption, WINDFALL_SPOT_KEY, func(pose: Dictionary) -> void:
 		_in_spotlight.erase(id)
 		var target := _hand_view(id)
@@ -4607,7 +4620,7 @@ func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 		from = _opp_pose(victim)
 		title = "[color=#ffd36b]You hook it from %s![/color]" % _who(victim)
 		note = "With 3 Hooks, you keep it." if keeps else "Now choose a card to give back."
-	var caption := "[center][font_size=%d][b]%s[/b][/font_size]\n%s[/center]" % [_fs(30), title, note]
+	var caption := "[center][font_size=%d]%s[/font_size]\n%s[/center]" % [_fs(30), _fancy(title), note]
 	_spotlights += 1
 	_hold_choices = true
 	# A card given back must wait for this steal to be shown first.
