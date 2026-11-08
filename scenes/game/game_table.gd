@@ -197,6 +197,7 @@ var _band_dismiss := Callable() # closes that band
 var _band_since := 0 # when it showed (msec): a click on the hand closes it, after a grace
 var _landing: Array = [] # your cards on their way to the crew: [{id, draws: [{source, cards}]}]
 var _auto_passed: Variant = null # the build choice passed for you (nothing to build)
+var _auto_pick := {} # the last draft card, taken for you: {decision, at (msec)}
 var _retract_restore := {} # a build taken back: its selection, to restore
 var _retract_sent := false # online: a take-back on its way to the relay
 var _glow_free_at := {} # pirate -> when their last draw glow ends (msec)
@@ -206,7 +207,9 @@ var _battle_glow := {} # card id -> {player, fought, lit}: announced a Battle no
 var _pending_sources := {} # cards whose effect waits on a pirate's choice -> lit yet
 var _hooks_waiting := 0 # Hook ceremonies yet to take their stage ticket
 var _band_holds := 0 # bands (shown or queued) that hold the choices
+var _bands_queued := 0 # bands called and not yet gone (holding or not)
 var _hooked_keep := {} # card id -> true: hooked from you, still shown in hand until its tug
+var _row_held := {} # Row slot -> true: revealed, still face down until its round's band shows
 # Battle bands still waiting to show, that later Battles join.
 var _announce_batch: Variant = null # {counts: {player: n}}
 var _result_batch: Variant = null # {winner, scores, details, count, battles, drawn}
@@ -326,12 +329,14 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_pending_sources.clear()
 	_hooks_waiting = 0
 	_hooked_keep.clear()
+	_row_held.clear()
 	_announce_batch = null
 	_result_batch = null
 	_stage_now = _stage_next # whatever was queued is dropped
 	_stage_moved.emit()
 	_hold_choices = false
 	_band_holds = 0
+	_bands_queued = 0
 	game.start()
 
 func _process(delta: float) -> void:
@@ -1965,7 +1970,7 @@ func _render_row() -> void:
 			empty.size_flags_horizontal = SIZE_SHRINK_CENTER
 			v.add_child(empty)
 			continue
-		if not slot.revealed:
+		if not slot.revealed or _row_held.has(i):
 			# Face down: stacked cards show, each a little up and to the right.
 			var count: int = slot.cards.size()
 			var step := Vector2(5, -5)
@@ -3029,13 +3034,18 @@ func _show_overlay(title: String, subtitle: String) -> HBoxContainer:
 	return cards
 
 ## Puts `button` at the top right of the choice, level with its title.
+## More than one go side by side.
 func _overlay_corner(button: Button) -> void:
-	var title: Control = _overlay_body.get_child(0)
-	var header := HBoxContainer.new()
-	_overlay_body.add_child(header)
-	_overlay_body.move_child(header, 0)
-	title.reparent(header)
-	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	var header: Control = _overlay_body.get_child(0)
+	if not header.has_meta("corner"):
+		var title := header
+		header = HBoxContainer.new()
+		header.set_meta("corner", true)
+		header.add_theme_constant_override("separation", 10)
+		_overlay_body.add_child(header)
+		_overlay_body.move_child(header, 0)
+		title.reparent(header)
+		title.size_flags_horizontal = SIZE_EXPAND_FILL
 	button.size_flags_vertical = SIZE_SHRINK_CENTER
 	header.add_child(button)
 	_queue_key_badges()
@@ -3054,7 +3064,12 @@ func _overlay_buttons(specs: Array) -> void:
 		button.add_theme_font_size_override("font_size", _fs(19))
 		button.custom_minimum_size = Vector2(130, 48)
 		row.add_child(button)
-	_overlay_body.add_child(row)
+	# Clear of the cards above: a selected card's glow and the key badges
+	# would otherwise touch the buttons.
+	var gap := MarginContainer.new()
+	gap.add_theme_constant_override("margin_top", 14)
+	gap.add_child(row)
+	_overlay_body.add_child(gap)
 	_queue_key_badges()
 
 func _overlay_card(parent: Control, id: int, on_click: Callable, face_up: bool = true, card_size: Vector2 = OVERLAY_CARD) -> CardView:
@@ -3238,7 +3253,20 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 		sub = "[color=#ffd36b]Compass:[/color] click the card to keep, then %s to discard." % ("a card" if discards == 1 else "%d cards" % discards)
 		if decision.can_use_compass:
 			sub += " Or use another Compass first."
+	# The last card, and nothing else to do: shown a moment, then taken.
+	var last: bool = pl.draft_hand.size() == 1 and discards == 0 \
+			and not decision.can_use_compass and not decision.can_redraw
+	if last:
+		sub = "The last card of the draft is yours."
 	var cards := _show_overlay("Draft — round %d" % game.round_index, sub)
+	if last:
+		var id: int = pl.draft_hand[0]
+		_overlay_card(cards, id, func() -> void: _submit({"pick": id}), true, OVERLAY_CARD)
+		var take := _primary(_button("Take it", func() -> void: _submit({"pick": id})))
+		take.add_theme_font_size_override("font_size", _fs(17))
+		_overlay_corner(take)
+		_auto_take_last(decision, id, take)
+		return
 	if decision.can_redraw:
 		var redraw := _button("Redraw all", func() -> void: _submit({"redraw": true}))
 		redraw.tooltip_text = "Not happy with this hand? Discard it and draw a new one, once."
@@ -3253,12 +3281,46 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 		elif drops.has(id):
 			view.mark = CardView.Mark.PAYMENT
 			view.set_caption("Discard")
-	var specs: Array = []
+	# The Compass's buttons together at the top right, Confirm last.
 	if decision.can_use_compass:
-		specs.append(["Use Compass (%d left)" % game.compasses_available(_seat), func() -> void: _submit({"use_compass": true})])
+		_overlay_corner(_compass_button())
 	if discards > 0:
-		specs.append(["Confirm", func() -> void: _submit({"pick": pick, "discards": drops}), pick >= 0 and drops.size() == discards, true])
-	_overlay_buttons(specs)
+		var confirm := _primary(_button("Confirm", func() -> void: _submit({"pick": pick, "discards": drops}), pick >= 0 and drops.size() == discards))
+		confirm.add_theme_font_size_override("font_size", _fs(17))
+		_overlay_corner(confirm)
+
+## Green like "New game", with the Compass icon, at the top right.
+func _compass_button() -> Button:
+	var button := _button("Use Compass (%d left)" % game.compasses_available(_seat), func() -> void: _submit({"use_compass": true}))
+	button.tooltip_text = SYMBOL_TIPS["fx-compass"]
+	_primary(button)
+	# Only its look: Enter should not spend a Compass (it confirms the pick).
+	button.remove_meta("primary")
+	button.icon = load(ICONS + "fx-compass.png") as Texture2D
+	button.add_theme_constant_override("icon_max_width", roundi(24 * ICON_SCALE))
+	button.add_theme_constant_override("h_separation", 8)
+	button.add_theme_font_size_override("font_size", _fs(17))
+	return button
+
+const AUTO_PICK_TIME := 2.5
+
+## Takes the last draft card for you once its bar on `button` has run down
+## (from when it was first shown; a re-render keeps the time left). While
+## the choice is put aside, it waits.
+func _auto_take_last(decision: Dictionary, id: int, button: Button) -> void:
+	var first := not is_same(_auto_pick.get("decision"), decision)
+	if first:
+		_auto_pick = {"decision": decision, "at": Time.get_ticks_msec() + int(AUTO_PICK_TIME * 1000.0)}
+	var left := maxf(0.0, (_auto_pick.at - Time.get_ticks_msec()) / 1000.0)
+	_countdown_bar(button, left, AUTO_PICK_TIME)
+	if not first:
+		return # its timer is already running
+	await get_tree().create_timer(AUTO_PICK_TIME).timeout
+	while is_inside_tree() and (_overlay_hidden or _hold_choices):
+		await get_tree().process_frame
+	if not is_inside_tree() or not is_same(game.pending.get(_seat), decision) or _choice_sent():
+		return
+	_submit({"pick": id})
 
 ## Without a Compass drawn, a click picks. With one or more: the first card
 ## clicked is kept, the next ones (one per Compass) discarded; click again to
@@ -3282,8 +3344,8 @@ func _on_draft_card(id: int, decision: Dictionary) -> void:
 func _render_game_over() -> void:
 	if is_instance_valid(_finale):
 		return
-	# After the last bands (a Battle, a claim...) have played out.
-	if _hold_choices or _band_up():
+	# After everything queued (a Battle, a claim, a Hook...) has played out.
+	if _hold_choices or _stage_busy():
 		get_tree().create_timer(0.3).timeout.connect(_render_game_over)
 		return
 	if _finale_cued:
@@ -3305,6 +3367,7 @@ func _show_finale() -> void:
 func _build_finale() -> void:
 	var winners := game.winners()
 	var won := winners.has(_seat)
+	_sfx.play("victory" if won else "defeat")
 	_finale = CanvasLayer.new()
 	_finale.layer = 7
 	add_child(_finale)
@@ -3741,11 +3804,12 @@ func _animate_cards(snapshot: Dictionary) -> void:
 
 ## A band across the table announcing the round and the wind: it opens,
 ## holds a moment and fades, without blocking the mouse.
-func _round_title(round_number: int, wind: int, delay: float) -> void:
+## `on_show`: called as the band comes on, after the last round's Hooks.
+func _round_title(round_number: int, wind: int, delay: float, on_show: Callable = Callable()) -> void:
 	var title := "Round %d" % round_number if round_number < DeckhandGame.ROUNDS else "Final round"
 	var wind_text := "The wind blows %s" % ("clockwise" if wind == 1 else "counter-clockwise")
 	# The round's first choice (the draft) is dealt once the title has gone.
-	_band(title, GOLD, wind_text, delay, true)
+	_band(title, GOLD, wind_text, delay, true, {"after_hooks": true, "on_show": on_show})
 
 ## A band across the middle of the table: `title`, and a `subtitle` (BBCode)
 ## under it. It opens, holds a moment and fades, letting clicks through.
@@ -3758,6 +3822,8 @@ func _round_title(round_number: int, wind: int, delay: float) -> void:
 ##   on_close: called once the band has gone.
 ##   read_time: how long it stays (with ok; default BAND_READ_TIME).
 ##   after_landing: waits for your cards on their way to the crew first.
+##   after_hooks: waits for Hook ceremonies still to take the stage first.
+##   on_show: called when the band's turn comes, before it opens.
 ##   icon: an icon name (assets/icons) shown on both sides of the title.
 ##   compose: called when the band's turn comes; returns {title, subtitle}
 ##     and any options above, overriding the ones given.
@@ -3765,6 +3831,7 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	var ok: bool = opts.get("ok", false)
 	var read_time: float = opts.get("read_time", BAND_READ_TIME)
 	var g := game
+	_bands_queued += 1
 	if hold:
 		_band_holds += 1
 		_hold_choices = true
@@ -3774,6 +3841,12 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 			return
 	if opts.get("after_landing", false):
 		await _landings_done() # before the ticket (see _hook_ceremony)
+		if not is_inside_tree():
+			return
+	if opts.get("after_hooks", false):
+		# A Hook takes its ticket a little after its event: let it.
+		while _hooks_waiting > 0 and is_inside_tree():
+			await get_tree().process_frame
 		if not is_inside_tree():
 			return
 	var ticket := _stage_take()
@@ -3787,6 +3860,9 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 		title_text = made.get("title", title_text)
 		subtitle = made.get("subtitle", subtitle)
 		opts.merge(made, true)
+	var on_show: Callable = opts.get("on_show", Callable())
+	if on_show.is_valid():
+		on_show.call()
 	var layer := CanvasLayer.new()
 	layer.layer = 6
 	add_child(layer)
@@ -3794,6 +3870,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	var on_close: Callable = opts.get("on_close", Callable())
 	layer.tree_exited.connect(func() -> void:
 		_stage_leave(ticket)
+		if is_same(g, game): # (a new game starts its count afresh)
+			_bands_queued -= 1
 		if on_close.is_valid() and is_inside_tree():
 			on_close.call()
 		if hold:
@@ -3900,8 +3978,16 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	_band_dismiss = dismiss
 	_band_since = Time.get_ticks_msec() + int(delay * 1000.0)
 	_badge(button, "O") # O, Enter or Space (see _input)
-	# The time left: a thin bar along the button's foot, inside its rim and
-	# following its rounded corners, running down.
+	_countdown_bar(button, read_time, read_time, delay + 0.25)
+	band.mouse_filter = MOUSE_FILTER_STOP
+	band.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed:
+			dismiss.call())
+
+## The time left on `button`: a thin bar along its foot, inside its rim and
+## following its rounded corners, running down from `left` (of `total`
+## seconds) to empty, after `delay`.
+func _countdown_bar(button: Button, left: float, total: float, delay: float = 0.0) -> void:
 	var countdown_started := [false]
 	var frame := button.get_theme_stylebox("normal") as StyleBoxFlat
 	var rim_l := frame.border_width_left if frame else 0
@@ -3917,24 +4003,21 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 	fill.anti_aliasing = frame.anti_aliasing if frame else true
 	bar.add_theme_stylebox_override("panel", fill)
 	button.add_child(bar)
-	var fit := func(left: float) -> void:
+	var start := clampf(left / total, 0.0, 1.0) if total > 0.0 else 0.0
+	var fit := func(share: float) -> void:
 		if not is_instance_valid(bar):
 			return
 		var height := 4.0
 		bar.position = Vector2(rim_l, button.size.y - rim_b - height)
-		bar.size = Vector2(maxf(0.0, (button.size.x - rim_l - rim_r) * left), height)
-	fit.call(1.0)
+		bar.size = Vector2(maxf(0.0, (button.size.x - rim_l - rim_r) * share), height)
+	fit.call(start)
 	button.resized.connect(func() -> void:
 		if not countdown_started[0]:
-			fit.call(1.0)) # laid out after it was made
+			fit.call(start)) # laid out after it was made
 	var countdown := bar.create_tween()
-	countdown.tween_interval(delay + 0.25)
+	countdown.tween_interval(maxf(delay, 0.001))
 	countdown.tween_callback(func() -> void: countdown_started[0] = true)
-	countdown.tween_method(fit, 1.0, 0.0, read_time)
-	band.mouse_filter = MOUSE_FILTER_STOP
-	band.gui_input.connect(func(event: InputEvent) -> void:
-		if event is InputEventMouseButton and event.pressed:
-			dismiss.call())
+	countdown.tween_method(fit, start, 0.0, maxf(left, 0.001))
 
 ## A line of BBCode text for a band.
 func _band_text(bbcode: String) -> RichTextLabel:
@@ -3963,6 +4046,10 @@ const BAND_READ_TIME := 5.0
 ## Whether a band is on screen. (A band that has just left the tree is still
 ## a valid object until the end of the frame: waiting for it to exit again
 ## would wait forever.)
+## Something is on stage or waiting for it.
+func _stage_busy() -> bool:
+	return _stage_now < _stage_next or _hooks_waiting > 0 or _bands_queued > 0 or _band_up()
+
 func _band_up() -> bool:
 	return is_instance_valid(_title_layer) and _title_layer.is_inside_tree()
 
@@ -3981,6 +4068,7 @@ func _battle_announced(p: int, source: int = -1) -> void:
 		"compose": func() -> Dictionary:
 			if is_same(_announce_batch, batch):
 				_announce_batch = null
+			_sfx.play("battle", -10.0 if batch.counts.has(_seat) else -16.0)
 			return _announce_text(batch.counts),
 	})
 
@@ -4039,6 +4127,7 @@ func _battle_fought(p: int, winner: int, scores: Dictionary, count: int, details
 		"compose": func() -> Dictionary:
 			if is_same(_result_batch, batch):
 				_result_batch = null
+			_sfx.play("battle")
 			return _result_band(batch),
 	})
 
@@ -4319,7 +4408,8 @@ func _spotlight_claim(id: int, from: Dictionary, claimer: int) -> void:
 		options.lift = 0.08
 		options.arc = 40.0
 		options.duration = 0.8
-		_motion.fly(id, pose, CardMotion.pose_of(target, true), options))
+		_motion.fly(id, pose, CardMotion.pose_of(target, true), options),
+		true, null, 0.85, -1, -1, 1.7, func() -> void: _sfx.play("claim", 0.0 if claimer == _seat else -6.0))
 
 ## A contested Infamy card (a tie: nobody gets it): shown mid-table with who
 ## tied for it, then it burns away.
@@ -4406,7 +4496,7 @@ const CONTESTED_SHOW_TIME := 2.7 # on show mid-table: time to read who tied
 ## `ticket`: a stage ticket already taken for it (else it takes one).
 ## `companion`: a card shown beside it, a hook between them (the card that
 ## hooked it).
-func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable, reveal_in_place: bool = true, holder: CardView = null, fly_time: float = 0.85, ticket: int = -1, companion: int = -1, show_time: float = 1.7) -> void:
+func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finish: Callable, reveal_in_place: bool = true, holder: CardView = null, fly_time: float = 0.85, ticket: int = -1, companion: int = -1, show_time: float = 1.7, on_show: Callable = Callable()) -> void:
 	# A card claimed as it is revealed first turns over where it lies, and
 	# stays there a moment, so everyone sees what came up. (Otherwise it
 	# turns over on its way to the middle.)
@@ -4465,6 +4555,8 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 		if is_instance_valid(revealed) and revealed != holder:
 			revealed.queue_free()
 		return # the table was closed, or a new game started, meanwhile
+	if on_show.is_valid():
+		on_show.call()
 	if revealed != null:
 		var held := (Time.get_ticks_msec() - shown_at) / 1000.0
 		if held < 1.2:
@@ -4649,6 +4741,7 @@ func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 	await _crew_settled()
 	if not is_inside_tree():
 		return
+	_sfx.play("hook")
 	# The card that hooks glows while its Hook is shown.
 	_pulse_active(source, (HOOK_TUG_TIME + HOOK_HAUL_TIME if victim == _seat else 0.85) + HOOK_SHOW_TIME + 1.2)
 	var tugged: CardView = null
@@ -4879,13 +4972,20 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 	var volume := 0.0 if p == _seat else -6.0
 	match kind:
 		"round_start":
-			_sfx.play("bell", -3.0)
+			# The new Infamy card stays face down until the round's band:
+			# what the last round left on stage (a Hook) plays out first.
+			var slot := game.round_index - 1
+			_row_held[slot] = true
 			# The first round's card waits for the table to fade in.
-			_round_title(game.round_index, game.wind(), 1.3 if _curtain.visible else 0.0)
+			_round_title(game.round_index, game.wind(), 1.3 if _curtain.visible else 0.0, func() -> void:
+				_sfx.play("bell", -3.0)
+				if _row_held.erase(slot):
+					_sfx.play("reveal")
+					_queue_refresh())
 			if game.round_index == 1:
 				_present_windfall()
 		"reveal":
-			_sfx.play("reveal")
+			pass # sounded when the Row shows it (see "round_start")
 		"deal":
 			# Another pirate's redraw is played quietly.
 			_sfx.play("card_deal", -2.0 if p == _seat else -12.0)
@@ -4929,10 +5029,10 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"shuffle":
 			_shuffle_pile(info.deck)
 		"hook":
-			_sfx.play("hook", 0.0 if _seat in [p, info.target] else -6.0)
 			if _seat in [p, info.target] and info.has("card"):
-				_hook_ceremony(info.card, p, info.target, info.get("source", -1))
+				_hook_ceremony(info.card, p, info.target, info.get("source", -1)) # sounds on its turn
 			else:
+				_sfx.play("hook", -6.0)
 				_pulse_active(info.get("source", -1))
 		"hook_give":
 			if p == _seat:
@@ -4940,13 +5040,11 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			elif info.target == _seat:
 				_receive_gift(info.card, p)
 		"battle_announce":
-			_sfx.play("battle", volume - 10.0)
 			_battle_announced(p, info.get("source", -1))
 		"battle":
-			_sfx.play("battle")
 			_battle_fought(p, info.winner, info.get("scores", {}), info.get("count", 1), info.get("details", {}), info.get("battles", 1))
 		"claim":
-			_sfx.play("claim", volume)
+			# Its sound plays when its spotlight comes on.
 			_claimed[info.card] = p
 			if _placing.has(info.card):
 				_in_spotlight[info.card] = true # shown placed in the Row first
@@ -4978,7 +5076,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 					var center := get_viewport_rect().size / 2.0
 					_contested(card, {"center": center, "size": ROW_CARD, "rotation": 0.0, "face_up": false}, rivals))
 		"game_end":
-			_sfx.play("victory" if game.winners().has(_seat) else "defeat")
+			pass # its sound plays with the finale (see _build_finale)
 
 func _on_hand_clicked(view: CardView) -> void:
 	var decision: Variant = game.pending.get(_seat)
