@@ -167,9 +167,15 @@ python3 tools/make_sfx.py   # synthesizes assets/sfx/*.wav
 - **Playtesting:** Jessica Gibbons, Gaël Nardin, Jonathan Bieler, Eduard Schäli, Riccardo Zoppello, Lucas Clark, the Break My Game community, and many others
 - **Music:** composed with Suno
 - **Sound effects:** synthesised by `tools/make_sfx.py`
-- **Typeface:** Signika by Anna Giedryś, under the SIL Open Font License (`scenes/shared/fonts/signika/OFL.txt`)
+- **Typefaces:** Signika by Anna Giedryś, under the SIL Open Font License; DejaVu Sans (symbols), under the Bitstream Vera / DejaVu license (each license is next to its font in `scenes/shared/fonts/`)
 - **Engine:** [Godot Engine](https://godotengine.org)
+
+The illustrations, card faces and backs, icons, logos and music are
+© Batiste Bieler / Tidale, **all rights reserved**: they may not be copied,
+modified or reused. See [ASSETS-LICENSE.md](ASSETS-LICENSE.md).
 
 ## License
 
-GPL-3.0, see [LICENSE](LICENSE).
+- **Code:** MIT, see [LICENSE](LICENSE).
+- **Art, icons, logos, music and the game's name:** all rights reserved, see
+  [ASSETS-LICENSE.md](ASSETS-LICENSE.md). The MIT License does not cover them.
