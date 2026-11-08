@@ -232,8 +232,47 @@ def main():
     flame = noise(0.6, 0.12, 0.2, low=0.02, high=0.06, sweep_to=0.2)
     crackles = [gain(noise(0.015, 0.0005, 0.003, low=0.4, high=0.7), rng.uniform(0.3, 0.7)) for _ in range(7)]
     save("burn", finish(mix(flame, *crackles, offsets=[0] + sorted(rng.uniform(0.05, 0.5) for _ in range(7))), 4500, 0.15), 0.36)
+
     print("wrote sounds to", os.path.normpath(OUT))
 
+
+LOOP = 4.0  # seconds; every part of a loop repeats a whole number of times in it
+
+
+def save_loop(name, track, peak=0.8):
+    """Like save(), without the fade: the end runs straight into the start."""
+    track = normalize(track, peak)
+    with wave.open(os.path.join(OUT, name + ".wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(b"".join(struct.pack("<h", int(max(-1, min(1, v)) * 32767)) for v in track))
+
+
+def drone(partials, seconds=LOOP):
+    """Steady sines [(Hz, level)]; each Hz a multiple of 1/LOOP, so it loops."""
+    n = int(RATE * seconds)
+    return [sum(a * math.sin(2 * math.pi * f * i / RATE) for f, a in partials) for i in range(n)]
+
+
+def steam_bed(cutoff, seconds=LOOP, crossfade=0.5):
+    """Low steam rush that loops: its own end crossfaded into its start."""
+    n, x = int(RATE * seconds), int(RATE * crossfade)
+    a = lowpass(noise(seconds + crossfade, 0.0, 1e9, low=0.02, high=0.5), cutoff)
+    return [a[i] * (i / x) + a[n + i] * (1 - i / x) if i < x else a[i] for i in range(n)]
+
+
+def pulse(track, rate, depth, seconds=LOOP):
+    """A slow throb `rate` times a second (a multiple of 1/LOOP)."""
+    return [v * (1.0 - depth * 0.5 * (1 + math.cos(2 * math.pi * rate * i / RATE))) for i, v in enumerate(track)]
+
+
+def hum_loops():
+    """Loops kept for later (not used by the game yet)."""
+    # The engine at work: a low hum throbbing like pistons, the steam
+    # breathing with it. For a card's effect at work, perhaps.
+    tone = pulse(drone([(41.0, 1.0), (82.0, 0.6), (123.0, 0.35), (164.0, 0.2), (205.0, 0.1)]), 1.5, 0.45)
+    save_loop("hum_b", mix(tone, gain(pulse(steam_bed(700), 1.5, 0.6), 0.6)), 0.3)
 
 if __name__ == "__main__":
     main()

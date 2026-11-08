@@ -44,6 +44,14 @@ float fbm(vec2 p) {
 	return value_noise(p) * 0.55 + value_noise(p * 2.1) * 0.3 + value_noise(p * 4.3) * 0.15;
 }
 
+// The card's modulate (tint and fade), which COLOR carries in from the vertex
+// stage: applied at the end, as the fragment sets COLOR itself.
+varying vec4 tint;
+
+void vertex() {
+	tint = COLOR;
+}
+
 void fragment() {
 	vec2 local = UV * rect_size - (rect_size * 0.5);
 	vec3 projected = tilt_inverse * vec3(local, 1.0);
@@ -111,5 +119,5 @@ void fragment() {
 		discard;
 	}
 
-	COLOR = vec4(rgb, alpha);
+	COLOR = vec4(rgb * tint.rgb, alpha * tint.a);
 }

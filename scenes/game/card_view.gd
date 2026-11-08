@@ -19,9 +19,31 @@ const MARK_COLORS := {
 }
 
 ## Rim halos: a claimable / claimed card (gold), a card whose effect is
-## being resolved (sea green).
+## being resolved (sea green), a place to click for a choice (light blue).
 const CLAIM_HALO := Color(1.0, 0.78, 0.32)
 const ACTIVE_HALO := Color(0.3, 1.0, 0.82)
+const PICK_HALO := Color(0.55, 0.82, 1.0)
+const PICK_HALO_HOT := Color(0.85, 0.95, 1.0) # pointed at: brighter
+const PICK_GROW := 1.07 # pointed at: a touch bigger
+
+var _pick_hot := false
+var _pick_tween: Tween
+
+## A pickable card under the pointer grows a little and its halo brightens.
+func _pick_hover(on: bool) -> void:
+	on = on and pickable
+	if on == _pick_hot:
+		return
+	_pick_hot = on
+	_refresh_mark()
+	if _pick_tween != null:
+		_pick_tween.kill()
+	if not is_inside_tree():
+		scale = Vector2.ONE
+		return
+	pivot_offset = size / 2.0
+	_pick_tween = create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK if on else Tween.TRANS_CUBIC)
+	_pick_tween.tween_property(self, "scale", Vector2.ONE * (PICK_GROW if on else 1.0), 0.16)
 
 ## Largest lean of a lifted card towards the pointer (radians).
 const MAX_TILT := 0.2
@@ -48,6 +70,33 @@ var active := false:
 			return
 		active = value
 		_refresh_mark()
+## Would be set off by the card being chosen to build: the same halo as
+## when its effect resolves.
+var primed := false:
+	set(value):
+		if value == primed:
+			return
+		primed = value
+		_refresh_mark()
+## A place to click for the choice being made (where your Windfall goes): a
+## light blue halo.
+var pickable := false:
+	set(value):
+		if value == pickable:
+			return
+		pickable = value
+		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if value else Control.CURSOR_ARROW
+		if not value:
+			_pick_hover(false)
+		_refresh_mark()
+## Not playable now (a card you cannot pay for): a little darker, unless
+## lifted (so it can still be read). It may still pay for another card.
+var dim := false:
+	set(value):
+		if value == dim:
+			return
+		dim = value
+		_refresh_tint()
 var interactive := true
 ## Opacity of the drop shadow under the card (0 = none), for lifted cards.
 var shadow := 0.0:
@@ -68,6 +117,7 @@ var lifted := false:
 		if value == lifted:
 			return
 		lifted = value
+		_refresh_tint()
 		if value:
 			if card_id != _swept_id:
 				_swept_id = card_id
@@ -91,6 +141,7 @@ var _focus_ring := Panel.new()
 var _texture_rect := TextureRect.new()
 var _border := Panel.new()
 var _caption := Label.new()
+var _note := Label.new() # under the badge: in view in a fanned hand
 var _badge := TextureRect.new() # green check: to build; red cross: to discard
 var _checks: Array[TextureRect] = [] # on an Infamy card's printed banners you have
 
@@ -165,6 +216,13 @@ func _init() -> void:
 	_caption.add_theme_constant_override("outline_size", 6)
 	_caption.add_theme_font_size_override("font_size", 16)
 	add_child(_caption)
+	_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_note.add_theme_color_override("font_outline_color", Color.BLACK)
+	_note.add_theme_constant_override("outline_size", 7)
+	_note.add_theme_font_size_override("font_size", 17)
+	_note.visible = false
+	add_child(_note)
 
 	var ring := StyleBoxFlat.new()
 	ring.draw_center = false
@@ -180,8 +238,12 @@ func _init() -> void:
 	add_child(_focus_ring)
 
 	set_process(false)
-	mouse_entered.connect(func() -> void: hovered.emit(self))
-	mouse_exited.connect(func() -> void: unhovered.emit(self))
+	mouse_entered.connect(func() -> void:
+		_pick_hover(true)
+		hovered.emit(self))
+	mouse_exited.connect(func() -> void:
+		_pick_hover(false)
+		unhovered.emit(self))
 	resized.connect(_on_resized)
 
 func _ready() -> void:
@@ -282,6 +344,17 @@ func _place_checks() -> void:
 func set_caption(text: String) -> void:
 	_caption.text = text
 
+## A short word under the badge (a discard the payment does without).
+func set_note(text: String, color: Color = Color.WHITE) -> void:
+	_note.text = text
+	_note.visible = text != ""
+	_note.add_theme_color_override("font_color", color)
+	_place_note()
+
+func _place_note() -> void:
+	_note.size = Vector2(size.x, 0.0)
+	_note.position = Vector2(0.0, _badge.position.y + _badge.size.y + 2.0)
+
 func _on_resized() -> void:
 	pivot_offset = size / 2.0
 	(_texture_rect.material as ShaderMaterial).set_shader_parameter("rect_size", size)
@@ -289,11 +362,12 @@ func _on_resized() -> void:
 	(_border.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
 	(_shadow.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06))
 	(_focus_ring.get_theme_stylebox("panel") as StyleBoxFlat).set_corner_radius_all(int(size.x * 0.06) + 4)
-	# Top-left corner, overhanging it a little (the corner a fanned hand
-	# leaves uncovered).
 	var badge := size.x * 0.3
 	_badge.size = Vector2(badge, badge)
-	_badge.position = Vector2(-badge * 0.25, -badge * 0.25)
+	# On the artwork, below the title: clear of the resource and banners
+	# along the top, and still in view in a fanned hand.
+	_badge.position = Vector2(size.x * 0.5 - badge / 2.0, size.y * 0.4 - badge / 2.0)
+	_place_note()
 	_place_checks()
 
 func _refresh_mark() -> void:
@@ -309,9 +383,12 @@ func _refresh_mark() -> void:
 	_badge.visible = mark == Mark.PAYMENT or mark == Mark.SELECTED
 	if _badge.visible:
 		_badge.texture = _mark_badge(mark == Mark.SELECTED)
-	var claimable := mark == Mark.CLAIMABLE or active
+	var claimable := mark == Mark.CLAIMABLE or active or primed or pickable
 	_set_param("shimmer", 1.0 if claimable else 0.0)
-	_set_param("shimmer_color", ACTIVE_HALO if active and mark != Mark.CLAIMABLE else CLAIM_HALO)
+	var halo := CLAIM_HALO
+	if mark != Mark.CLAIMABLE:
+		halo = ACTIVE_HALO if active or primed else (PICK_HALO_HOT if _pick_hot else PICK_HALO)
+	_set_param("shimmer_color", halo)
 	# Only a shimmering card needs TIME: the rest stay frozen, so they never
 	# force the screen to redraw (see Effects).
 	var material := _texture_rect.material as ShaderMaterial
@@ -320,7 +397,19 @@ func _refresh_mark() -> void:
 	else:
 		material.remove_meta("effects_base")
 		material.shader = Effects.frozen(_shader)
-	modulate = Color(0.55, 0.55, 0.55) if mark == Mark.DISABLED else Color.WHITE
+	_refresh_tint()
+
+const DIM_TINT := Color(0.68, 0.66, 0.64)
+
+## Greyed (disabled) or dimmed, keeping the card's opacity (it may be hidden
+## while its stand-in flies).
+func _refresh_tint() -> void:
+	var tint := Color.WHITE
+	if mark == Mark.DISABLED:
+		tint = Color(0.55, 0.55, 0.55)
+	elif dim and not lifted:
+		tint = DIM_TINT
+	modulate = Color(tint, modulate.a)
 
 ## A green check (to build) or a red cross (to discard) with a light rim,
 ## drawn once for all cards.

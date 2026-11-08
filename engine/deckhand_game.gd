@@ -293,6 +293,11 @@ func submit(p: int, action: Dictionary) -> String:
 	_run()
 	return ""
 
+## Whether `p` has made their choice of a decision everyone makes together,
+## and waits for the others.
+func has_answered(p: int) -> bool:
+	return _answers.has(p)
+
 ## Whether `p` may take back the build they chose: the others are still
 ## choosing theirs (once all have, the builds are played at once).
 func can_retract(p: int) -> bool:
@@ -681,6 +686,22 @@ func _discard_windfall(p: int, dest: int) -> void:
 
 # --- Crew and effects -------------------------------------------------------
 
+## The cards in `p`'s crew that adding card `id` sets off ("each time you
+## add X to your crew"): {crew card: how many times}, in crew order.
+func triggers_of(p: int, id: int) -> Dictionary:
+	var card := CardDB.get_card(id)
+	var out := {}
+	for other: int in players[p].crew:
+		if other == id:
+			continue
+		var trigger: Variant = CardDB.get_card(other).trigger
+		if trigger == null:
+			continue
+		var times: int = card.tentacles if trigger.on == "tentacle" else card.banners.count(trigger.on)
+		if times > 0:
+			out[other] = times
+	return out
+
 func _task_add_to_crew(task: Dictionary) -> void:
 	var p: int = task.player
 	var id: int = task.card
@@ -692,30 +713,23 @@ func _task_add_to_crew(task: Dictionary) -> void:
 	for effect: String in card.effects:
 		tasks.append({"type": "effect", "player": p, "effect": effect, "source": id})
 	# "Each time you add X to your crew" triggers on other crew cards.
-	for other in players[p].crew:
-		if other == id:
-			continue
-		var trigger: Variant = CardDB.get_card(other).trigger
-		if trigger == null:
-			continue
-		var times := 0
-		if trigger.on == "tentacle":
-			times = card.tentacles
-		else:
-			times = card.banners.count(trigger.on)
-		for _i in range(times):
-			tasks.append({"type": "effect", "player": p, "effect": trigger.effect, "source": other})
+	var triggered := triggers_of(p, id)
+	for other: int in triggered:
+		var trigger: Dictionary = CardDB.get_card(other).trigger
+		for _i in range(triggered[other]):
+			# `cause`: the card whose addition set it off.
+			tasks.append({"type": "effect", "player": p, "effect": trigger.effect, "source": other, "cause": id})
 	_push_front(tasks)
 
 func _task_effect(task: Dictionary) -> void:
 	var p: int = task.player
-	event.emit("effect", {"player": p, "effect": task.effect, "source": task.source})
+	event.emit("effect", {"player": p, "effect": task.effect, "source": task.source, "cause": task.get("cause", -1)})
 	match task.effect:
 		"draw-1", "draw-2":
 			var n := _draw_into_hand(p, 1 if task.effect == "draw-1" else 2)
 			_log("%s draws %d card%s (%s)." % [_name(p), n, "" if n == 1 else "s", CardDB.title(task.source)])
 			var hand: Array[int] = players[p].hand
-			event.emit("draw", {"player": p, "source": task.source, "cards": hand.slice(hand.size() - n)})
+			event.emit("draw", {"player": p, "source": task.source, "cause": task.get("cause", -1), "cards": hand.slice(hand.size() - n)})
 		"3-choices":
 			var drawn: Array[int] = []
 			for _i in range(3):
@@ -801,15 +815,24 @@ func _answer_telescope_swap(p: int, decision: Dictionary, action: Dictionary) ->
 	_shuffle(infamy_deck)
 	event.emit("shuffle", {"deck": "infamy"})
 
+## Where a Telescope places the top Infamy card: the rightmost empty Row
+## slot, or the last slot if none is empty.
+func place_slot() -> int:
+	for i in range(ROW_SIZE - 1, -1, -1):
+		if row[i].cards.is_empty():
+			return i
+	return ROW_SIZE - 1
+
 func _validate_telescope_place(_p: int, _decision: Dictionary, _action: Dictionary) -> String:
 	return ""
 
 func _answer_telescope_place(p: int, decision: Dictionary, action: Dictionary) -> void:
 	if action.get("place", false):
 		infamy_deck.pop_back()
-		row[ROW_SIZE - 1].cards.append(decision.card)
-		_log("%s places %s face up in the Row." % [_name(p), CardDB.title(decision.card)])
-		event.emit("telescope", {"player": p})
+		var slot := place_slot()
+		row[slot].cards.append(decision.card)
+		_log("%s places %s face up in Row slot %d." % [_name(p), CardDB.title(decision.card), slot + 1])
+		event.emit("telescope", {"player": p, "placed": decision.card, "slot": slot})
 		_push_front([{"type": "claims"}])
 	else:
 		_log("%s peeks with a Telescope." % _name(p))

@@ -108,6 +108,8 @@ var _sent_build := {}
 var _pay: Array[int] = []
 var _pay_windfall := false
 var _windfall_dest := DeckhandGame.WINDFALL_DECK
+var _windfall_step := false # building with your Windfall: choosing where it goes
+var _confirming := "" # a move asked to be confirmed: "pass" (over the hand limit)
 var _selected: Array[int] = []
 var _selected_windfall := false
 var _overlay_hidden := false # the player put the current choice aside to look at the table
@@ -191,10 +193,14 @@ var _gifts := {} # card id -> true: given back after a Hook, flies off glowing
 var _band_ok: Button = null # the OK of the band on screen, if it has one
 var _band_dismiss := Callable() # closes that band
 var _band_since := 0 # when it showed (msec): a click on the hand closes it, after a grace
-var _landing: Array = [] # your cards on their way to the crew: [{id, draws}]
+var _landing: Array = [] # your cards on their way to the crew: [{id, draws: [{source, cards}]}]
+var _auto_passed: Variant = null # the build choice passed for you (nothing to build)
 var _retract_restore := {} # a build taken back: its selection, to restore
 var _retract_sent := false # online: a take-back on its way to the relay
+var _glow_free_at := {} # pirate -> when their last draw glow ends (msec)
 var _active := {} # crew card id -> reasons it glows (its effect is resolving)
+var _placing := {} # card id -> Row slot: placed by a Telescope, not yet shown there
+var _battle_glow := {} # card id -> {player, fought, lit}: announced a Battle not yet over
 var _pending_sources := {} # cards whose effect waits on a pirate's choice -> lit yet
 var _hooks_waiting := 0 # Hook ceremonies yet to take their stage ticket
 var _band_holds := 0 # bands (shown or queued) that hold the choices
@@ -310,6 +316,9 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_sent_build = {}
 	_landing.clear()
 	_active.clear()
+	_battle_glow.clear()
+	_placing.clear()
+	_glow_free_at.clear()
 	_retract_restore = {}
 	_retract_sent = false
 	_pending_sources.clear()
@@ -664,11 +673,12 @@ func _build_ui() -> void:
 	_action_bar = action_panel
 	var action_h := HBoxContainer.new()
 	action_h.add_theme_constant_override("separation", 12)
+	action_h.custom_minimum_size.y = 42
 	action_panel.add_child(action_h)
 	_action_text = _rich(17)
 	_action_text.fit_content = true
 	_action_text.size_flags_horizontal = SIZE_EXPAND_FILL
-	_action_text.custom_minimum_size.y = 42
+	_action_text.size_flags_vertical = SIZE_SHRINK_CENTER # centred in the bar
 	action_h.add_child(_action_text)
 	_buttons = HBoxContainer.new()
 	_buttons.add_theme_constant_override("separation", 8)
@@ -1826,6 +1836,7 @@ func _quiet(button: Button) -> Button:
 func _card(id: int, card_size: Vector2, face_up: bool = true) -> CardView:
 	var view := CardView.make(id, card_size, face_up)
 	view.active = _active.has(id)
+	view.primed = _primed().has(id)
 	view.hovered.connect(_on_card_hovered)
 	_card_views.append(view)
 	view.unhovered.connect(_on_card_unhovered)
@@ -1842,8 +1853,20 @@ static func _fs(size: int) -> int:
 static func _img(name: String, size: int = 20) -> String:
 	return "[img=%d]%s%s.png[/img]" % [roundi(size * ICON_SCALE), ICONS, name]
 
+## A resource icon fitted in a `size` square: a tall one (the skull) as tall
+## as the others, so the counts beside them line up.
 static func _res(token: String, size: int = 20) -> String:
-	return _img("res-" + token, size)
+	var path := "%sres-%s.png" % [ICONS, token]
+	if not _icon_aspect.has(path):
+		var texture := load(path) as Texture2D
+		_icon_aspect[path] = texture.get_width() / float(texture.get_height()) if texture != null else 1.0
+	var aspect: float = _icon_aspect[path]
+	var box := size * ICON_SCALE
+	if aspect >= 1.0:
+		return "[img=%d]%s[/img]" % [roundi(box), path]
+	return "[img=%dx%d]%s[/img]" % [roundi(box * aspect), roundi(box), path]
+
+static var _icon_aspect := {} # icon path -> width / height
 
 static func _banner(banner: String, size: int = 22) -> String:
 	return _img("banner-" + banner, size)
@@ -1898,6 +1921,8 @@ func _reset_input() -> void:
 	_pay.clear()
 	_pay_windfall = false
 	_windfall_dest = DeckhandGame.WINDFALL_DECK
+	_windfall_step = false
+	_confirming = ""
 	_selected.clear()
 	_selected_windfall = false
 	_overlay_hidden = false
@@ -1941,8 +1966,15 @@ func _render_row() -> void:
 			pile.custom_minimum_size = ROW_CARD
 			pile.size_flags_horizontal = SIZE_SHRINK_CENTER
 			v.add_child(pile)
+			var picking := _picking_windfall()
+			var story := _slot_story(i)
 			for k in count:
 				var back := _card(slot.cards[k], back_size, false)
+				back.tooltip_text = story
+				if picking:
+					# Where your Windfall may go: click the slot to stack it.
+					back.clicked.connect(func(_v: CardView) -> void: _pick_windfall(i))
+					back.pickable = k == count - 1
 				back.position = Vector2((ROW_CARD.x - back_size.x) / 2.0, ROW_CARD.y - back_size.y) + step * k - Vector2(step.x * (count - 1) / 2.0, 0)
 				if count > 1:
 					if k == count - 1:
@@ -2082,6 +2114,11 @@ func _render_piles() -> void:
 			pile.add_child(edge)
 		var view := CardView.make(id, PILE_CARD, false)
 		view.interactive = false
+		if spec[3] and _picking_windfall():
+			# Or into the Infamy deck.
+			view.interactive = true
+			view.pickable = true
+			view.clicked.connect(func(_v: CardView) -> void: _pick_windfall(DeckhandGame.WINDFALL_DECK))
 		_pile_views[spec[0].to_lower()] = view
 		view.set_caption(str(spec[1]))
 		if spec[1] == 0:
@@ -2099,11 +2136,22 @@ func _player_summary(p: int, icon_size: int, fresh: Array = []) -> String:
 		if banners[b] > 0:
 			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
 			parts.append(_tip(_banner_tip(b), "%s%s" % [_banner(b, icon_size + 2), count]))
-	var banner_text := " ".join(parts) if not parts.is_empty() else "[color=#8a96a6]no banners[/color]"
+	var banner_widths: Array[float] = []
+	for b in CardDB.BANNERS:
+		if banners[b] > 0:
+			banner_widths.append(_item_width(icon_size + 2, 1, banners[b]))
 	var prod: Array[String] = []
+	var prod_widths: Array[float] = []
 	for group: Array in _production_groups(p):
 		prod.append(_tip(_slot_tip(group[0], group[1]).replace("Your crew", "Their crew"), "%s%d" % [_slot_icons(group[0], icon_size), group[1]]))
-	var prod_text := " ".join(prod) if not prod.is_empty() else "[color=#8a96a6]none[/color]"
+		prod_widths.append(_item_width(icon_size, group[0].size(), group[1]))
+	# Labels on the left, their icons on the right: on two even lines when
+	# they do not fit on one (rather than a lone icon on a line of its own).
+	var font := get_theme_default_font()
+	var label_width := font.get_string_size("Produces", HORIZONTAL_ALIGNMENT_LEFT, -1, _fs(13)).x + 10.0
+	var room := OPP_COLUMN_WIDTH - 32.0 - label_width
+	var banner_text := _even_lines(parts, banner_widths, room) if not parts.is_empty() else "[color=#8a96a6]no banners[/color]"
+	var prod_text := _even_lines(prod, prod_widths, room) if not prod.is_empty() else "[color=#8a96a6]none[/color]"
 	var extras := _tip(SYMBOL_TIPS["fx-tentacle"], "%s%d" % [_img("fx-tentacle", icon_size), game.tentacles(p)])
 	for key in ["battles", "hooks", "compasses"]:
 		var n := game.symbol_count(p, key)
@@ -2112,7 +2160,35 @@ func _player_summary(p: int, icon_size: int, fresh: Array = []) -> String:
 			extras += "  " + _tip(SYMBOL_TIPS[icon], "%s%d" % [_img(icon, icon_size), n])
 	if game.players[p].pending_battles > 0:
 		extras += "  " + _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[p].pending_battles)
-	return "Banners %s     Produces %s     %s" % [banner_text, prod_text, extras]
+	return "[table=2][cell padding=0,0,10,2]Banners[/cell][cell padding=0,0,0,2]%s[/cell][cell padding=0,0,10,2]Produces[/cell][cell padding=0,0,0,2]%s[/cell][/table]\n%s" % [banner_text, prod_text, extras]
+
+## About how wide an icon item is in the summary: `icons` icons (with a
+## slash between) and its count.
+func _item_width(icon_size: int, icons: int, count: int) -> float:
+	var digit := _fs(13) * 0.6
+	return icon_size * icons + (icons - 1) * digit + str(count).length() * digit + digit * 0.6
+
+## `items` joined by spaces, broken into as few lines as fit `room`, each
+## about as long as the others.
+static func _even_lines(items: Array[String], widths: Array[float], room: float) -> String:
+	var total := 0.0
+	for w in widths:
+		total += w
+	var lines := maxi(1, ceili(total / room))
+	if lines == 1:
+		return " ".join(items)
+	var target := total / lines
+	var out := ""
+	var line_width := 0.0
+	for i in range(items.size()):
+		if line_width > 0.0 and line_width + widths[i] / 2.0 > target and out.count("\n") < lines - 1:
+			out += "\n"
+			line_width = 0.0
+		elif line_width > 0.0:
+			out += " "
+		out += items[i]
+		line_width += widths[i]
+	return out
 
 ## `bbcode` with a tooltip `text` on hover (in a label set up by _with_tips()).
 static func _tip(text: String, bbcode: String) -> String:
@@ -2159,7 +2235,8 @@ func _slot_icons(slot: Array, icon_size: int) -> String:
 	var alt: Array[String] = []
 	for token: String in slot:
 		alt.append(_res(token, icon_size))
-	return "/".join(alt)
+	# Word joiners: the alternatives never part across lines.
+	return "\u2060/\u2060".join(alt)
 
 func _render_opponents() -> void:
 	_clear(_opponents_box)
@@ -2182,6 +2259,8 @@ func _render_opponents() -> void:
 			status = "  [color=#e8a0a0](away)[/color]"
 		elif game.pending.has(p):
 			status = "  [color=#8a96a6](thinking…)[/color]"
+		elif game.has_answered(p) and not game.pending.is_empty():
+			status = "  [color=#8fe388]✓ ready[/color]"
 		var template := "[b]%s[/b]%s\n[color=#ffd36b]{vp} VP[/color]   ·   hand %d   ·   %s" % [
 			_who(p), status, game.hand_size(p),
 			"windfall ✓" if pl.windfall >= 0 else "no windfall"]
@@ -2189,7 +2268,7 @@ func _render_opponents() -> void:
 		var fresh := _show_gains(p, head, template, Vector2(0.0, head.get_theme_font("normal_font").get_height(_fs(16))), 0.75)
 		var summary := _with_tips(_rich(13))
 		summary.fit_content = true
-		summary.text = _player_summary(p, 15, fresh).replace("     ", "\n")
+		summary.text = _player_summary(p, 15, fresh)
 		v.add_child(summary)
 		# One row; the cards overlap once they no longer fit side by side.
 		var row := HBoxContainer.new()
@@ -2316,9 +2395,16 @@ func _render_ledger() -> void:
 			cells.append(_tip(_banner_tip(b), "%s %s" % [_banner(b, 21), count]))
 	var text := _ledger_section("Banners", cells, "none raised")
 	cells = []
+	var choices: Array[String] = [] # "A or B" slots: too wide for a third, two per row
 	for group: Array in _production_groups(_seat):
-		cells.append(_tip(_slot_tip(group[0], group[1]), "%s %d" % [_slot_icons(group[0], 20), group[1]]))
-	text += _ledger_section("Produces", cells, "nothing yet")
+		if (group[0] as Array).size() > 1:
+			# No count: each "A or B" pair is on one card only, so it is 1.
+			choices.append(_tip(_slot_tip(group[0], group[1]), _slot_icons(group[0], 26)))
+		else:
+			cells.append(_tip(_slot_tip(group[0], group[1]), "%s %d" % [_slot_icons(group[0], 26), group[1]]))
+	text += _ledger_section("Produces", cells, "nothing yet" if choices.is_empty() else "", 3, not choices.is_empty())
+	if not choices.is_empty():
+		text += _ledger_section("", choices, "", 2)
 	cells = [_tip(SYMBOL_TIPS["fx-tentacle"], "%s %d" % [_img("fx-tentacle", 20), game.tentacles(_seat)])]
 	var compasses := game.symbol_count(_seat, "compasses")
 	for spec in [["battles", "fx-battle"], ["hooks", "fx-hook"]]:
@@ -2332,13 +2418,15 @@ func _render_ledger() -> void:
 		text += _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[_seat].pending_battles)
 	_ledger_body.text = text
 
-func _ledger_section(title: String, cells: Array[String], empty: String) -> String:
+## A titled grid of `cells` in `columns` (no title: it continues the section
+## above; `more`: the next one does, so no gap yet).
+func _ledger_section(title: String, cells: Array[String], empty: String, columns: int = 3, more: bool = false) -> String:
 	# A short gap after each section, not a full line.
-	var gap := "[font_size=%d] [/font_size]\n" % _fs(4)
-	var text := "[color=#8a96a6][font_size=%d]%s[/font_size][/color]\n" % [_fs(13), title]
+	var gap := "" if more else "[font_size=%d] [/font_size]\n" % _fs(4)
+	var text := "" if title.is_empty() else "[color=#8a96a6][font_size=%d]%s[/font_size][/color]\n" % [_fs(13), title]
 	if cells.is_empty():
-		return text + "[color=#8a96a6]%s[/color]\n" % empty + gap
-	text += "[table=3]"
+		return text + ("" if empty.is_empty() else "[color=#8a96a6]%s[/color]\n" % empty) + gap
+	text += "[table=%d]" % columns
 	for cell in cells:
 		# Equal columns, so a wide entry does not push the others apart.
 		text += "[cell expand=1 padding=0,0,6,0]%s[/cell]" % cell
@@ -2376,6 +2464,7 @@ func _render_hand() -> void:
 	_hovered_hand = null
 	var decision: Variant = game.pending.get(_seat)
 	var type: String = decision.type if decision != null else ""
+	var surplus := _surplus() if type == "build" else {}
 	for entry: Dictionary in _hand_entries():
 		var id: int = entry.id
 		var view := _card(id, HAND_CARD)
@@ -2411,10 +2500,14 @@ func _render_hand() -> void:
 		elif type == "build":
 			if entry.get("windfall", false):
 				view.mark = CardView.Mark.PAYMENT if _pay_windfall else CardView.Mark.NONE
+				if _pay_windfall and surplus.windfall:
+					view.set_note("Not needed", SURPLUS_RED)
 			elif id == _build_card:
 				view.mark = CardView.Mark.SELECTED
 			elif _pay.has(id):
 				view.mark = CardView.Mark.PAYMENT
+				if surplus.cards.has(id):
+					view.set_note("Not needed", SURPLUS_RED)
 		elif type == "hand_limit":
 			var chosen: bool = _selected_windfall if entry.get("windfall", false) else _selected.has(id)
 			view.mark = CardView.Mark.PAYMENT if chosen else CardView.Mark.NONE
@@ -2430,6 +2523,11 @@ func _render_hand() -> void:
 		# Crew production alone pays for it.
 		if view.mark == CardView.Mark.NONE and not entry.get("windfall", false) and _is_free(id):
 			view.mark = CardView.Mark.FREE
+		# Choosing what to build: the cards you cannot pay for are dimmed
+		# (they can still pay for another).
+		if type == "build" and _build_card < 0 and not entry.get("windfall", false) \
+				and not entry.get("building", false) and not _can_afford(id):
+			view.dim = true
 		_hand_area.add_child(view)
 		_hand_views.append(view)
 		if id == focus_id:
@@ -2439,6 +2537,40 @@ func _render_hand() -> void:
 		_on_card_hovered(_hovered_hand)
 	else:
 		_kb_hand = false
+
+const AUTO_PASS_DELAY := 2.0
+
+## Passes for you (nothing to build) once `decision` has been on show a moment;
+## once per decision (a pass taken back is not passed again).
+func _auto_pass(decision: Dictionary) -> void:
+	if is_same(_auto_passed, decision):
+		return
+	_auto_passed = decision
+	await get_tree().create_timer(AUTO_PASS_DELAY).timeout
+	while is_inside_tree() and _hold_choices: # a moment on show first
+		await get_tree().process_frame
+	if not is_inside_tree() or not is_same(game.pending.get(_seat), decision) or _any_affordable():
+		return
+	if _choice_sent():
+		return
+	_submit({"pass": true})
+
+## Whether your hand (and Windfall) can pay for card `id` with your crew.
+func _can_afford(id: int) -> bool:
+	if not game.players[_seat].hand.has(id):
+		return false
+	if _is_free(id):
+		return true
+	var others: Array = game.players[_seat].hand.filter(func(other: int) -> bool: return other != id)
+	var windfall_value := INF if game.players[_seat].windfall < 0 else 1.0
+	var keep := func(_card: int) -> float: return 0.0
+	return Payment.plan(CardDB.get_card(id).cost, game.crew_production_slots(_seat), others, keep, windfall_value).ok
+
+func _any_affordable() -> bool:
+	for id: int in game.players[_seat].hand:
+		if _can_afford(id):
+			return true
+	return false
 
 func _is_free(id: int) -> bool:
 	return Payment.missing_after_crew(CardDB.get_card(id).cost, game.crew_production_slots(_seat)).is_empty()
@@ -2508,7 +2640,23 @@ func _set_buttons(specs: Array) -> void:
 		_buttons.add_child(_button(spec[0], spec[1], spec[2] if spec.size() > 2 else true))
 	_queue_key_badges()
 
+## Your crew cards that the card chosen to build would set off ("each time
+## you add X to your crew"), with how many times.
+func _primed() -> Dictionary:
+	var decision: Variant = game.pending.get(_seat)
+	if _build_card < 0 or decision == null or decision.type != "build":
+		return {}
+	return game.triggers_of(_seat, _build_card)
+
+## Lights the crew cards the chosen card would set off.
+func _show_primed() -> void:
+	var primed := _primed()
+	for view in _card_views:
+		if is_instance_valid(view) and game.players[_seat].crew.has(view.card_id):
+			view.primed = primed.has(view.card_id)
+
 func _render_action() -> void:
+	_show_primed()
 	var decision: Variant = game.pending.get(_seat)
 	var paying: bool = decision != null and decision.type == "build" and _build_card >= 0 and game.phase != DeckhandGame.Phase.GAME_OVER
 	if not paying:
@@ -2563,16 +2711,34 @@ func _render_action() -> void:
 				_set_buttons([["Hide to see the table", _toggle_overlay]])
 
 func _render_build_action() -> void:
+	if _windfall_step:
+		_action_text.text = "[b]Build %s[/b]   [color=#e8c890]choose where your Windfall goes[/color]" % CardDB.title(_build_card)
+		_set_buttons([])
+		return
+	if _build_card < 0 and not _any_affordable():
+		# Passing is all there is: it is done for you, after a moment.
+		_action_text.text = "[b]Build:[/b] you can't pay for any card in your hand, so you pass for the rest of the round."
+		_set_buttons([["Pass »", func() -> void: _submit({"pass": true})]])
+		_auto_pass(game.pending[_seat])
+		return
+	if _confirming == "pass":
+		var extra := game.hand_size(_seat) - DeckhandGame.HAND_LIMIT
+		_action_text.text = "[color=#ffb070]⚠ You hold %d cards: at the end of the round you discard %d, down to %d.[/color] Pass anyway?" % [
+			game.hand_size(_seat), extra, DeckhandGame.HAND_LIMIT]
+		_set_buttons([["« Back", _unconfirm], ["Pass anyway", func() -> void: _submit({"pass": true})]])
+		# Bright red: it costs cards.
+		_tint(_buttons.get_child(_buttons.get_child_count() - 1), Color(0.82, 0.1, 0.06), Color(1.0, 0.5, 0.42))
+		return
 	if _build_card < 0:
 		_action_text.text = "[b]Build:[/b] click a card in your hand to build it, or pass for the rest of the round."
-		_set_buttons([["Pass »", func() -> void: _submit({"pass": true})]])
+		_set_buttons([["Pass »", _try_pass]])
 		return
 	var card := CardDB.get_card(_build_card)
 	var crew_missing := Payment.missing_after_crew(card.cost, game.crew_production_slots(_seat))
 	var result := game.check_payment(_seat, _build_card, _pay, _pay_windfall)
-	# One line here; the payment itself is in the panel over the crew.
-	var state := "[color=#8fe388]✓ paid — ready to build[/color]" if result.ok else "[color=#e8c890]pick hand cards to discard[/color]"
-	_action_text.text = "[b]Build %s[/b]   %s" % [card.title, state]
+	# Just the card here: the payment, and whether it is paid, is in the
+	# panel over the crew.
+	_action_text.text = "[b]Build %s[/b]" % card.title
 	var specs: Array = [
 		["Cancel", func() -> void:
 			_reset_input()
@@ -2585,9 +2751,51 @@ func _render_build_action() -> void:
 	if result.ok:
 		_primary(build)
 	_buttons.add_child(build)
-	_buttons.add_child(_button("Pass »", func() -> void: _submit({"pass": true})))
+	_buttons.add_child(_button("Pass »", _try_pass))
 	_render_pay_panel(card, crew_missing, result)
 	_show_pay_panel(true)
+
+## Pass, after a word if you hold more than the hand limit (you will
+## discard the rest at the end of the round).
+func _try_pass() -> void:
+	if game.hand_size(_seat) > DeckhandGame.HAND_LIMIT and _confirming != "pass":
+		_confirming = "pass"
+		_render_action()
+		return
+	_submit({"pass": true})
+
+func _unconfirm() -> void:
+	_confirming = ""
+	_render_action()
+
+## How many of the cards chosen to pay (the Windfall included) are not
+## needed: dropped one by one while the payment still holds.
+func _overpaid() -> int:
+	var surplus := _surplus()
+	return surplus.cards.size() + (1 if surplus.windfall else 0)
+
+const SURPLUS_RED := Color(1.0, 0.29, 0.23) # as the overpaid status line
+
+## The discards the payment does without: {cards, windfall: bool}. The
+## Windfall first, then the latest picked (likeliest a slip).
+func _surplus() -> Dictionary:
+	var out := {"cards": [], "windfall": false}
+	if _build_card < 0 or not game.check_payment(_seat, _build_card, _pay, _pay_windfall).ok:
+		return out
+	var pay := _pay.duplicate()
+	var windfall := _pay_windfall
+	if windfall and game.check_payment(_seat, _build_card, pay, false).ok:
+		windfall = false
+		out.windfall = true
+	var latest := _pay.duplicate()
+	latest.reverse()
+	for id: int in latest:
+		var without := pay.duplicate()
+		without.erase(id)
+		if game.check_payment(_seat, _build_card, without, windfall).ok:
+			pay = without
+			out.cards.append(id)
+	return out
 
 ## The payment panel: a wooden plate that rises over the bottom of the crew
 ## while a card is being paid for, so nothing else on the table moves.
@@ -2603,55 +2811,126 @@ func _build_pay_panel() -> void:
 
 func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary) -> void:
 	_clear(_pay_body)
-	_pay_body.add_child(_label("Paying for %s" % card.title, 18, GOLD, true))
-	# The cost as a checklist: what the crew pays, what discards pay, what is missing.
-	var unpaid := {}
-	for token: String in result.missing:
-		unpaid[token] = unpaid.get(token, 0) + 1
-	var from_discards := {}
-	for token: String in crew_missing:
-		from_discards[token] = from_discards.get(token, 0) + 1
+	var title := _label("Paying for %s" % card.title, 20, GOLD, true)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_pay_body.add_child(title)
+	# Wide rather than tall (it covers less of the crew): the cost on the
+	# left, how to pay it on the right.
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 22)
+	_pay_body.add_child(columns)
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 12)
+	left.size_flags_vertical = SIZE_SHRINK_CENTER
+	columns.add_child(left)
+	# The cost as a checklist: each token paid (and by what) or not yet.
+	var payers: Array = result.get("payers", [])
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
-	_pay_body.add_child(row)
-	for token: String in card.cost:
-		var mark: String
-		if from_discards.get(token, 0) == 0:
-			mark = "crew"
-		elif unpaid.get(token, 0) >= from_discards[token]:
-			mark = "missing"
-		else:
-			mark = "discard"
-		if mark != "crew":
-			from_discards[token] -= 1
-		if mark == "missing":
-			unpaid[token] -= 1
-		row.add_child(_cost_chip(token, mark))
-	if crew_missing.is_empty():
-		_pay_body.add_child(_label("Your crew pays it all.", 15, Color(0.75, 0.95, 0.7)))
+	row.add_theme_constant_override("separation", 16)
+	left.add_child(row)
+	for i in range(card.cost.size()):
+		var token: String = card.cost[i]
+		var payer: Dictionary = payers[i] if i < payers.size() else {}
+		var chip := _cost_chip(token, "missing" if payer.is_empty() else "paid")
+		var what: String = CardDB.RESOURCE_NAMES[token]
+		_chip_icon(chip).tooltip_text = "%s: still to pay." % what if payer.is_empty() else "%s, paid by %s." % [what, _payer_text(payer)]
+		row.add_child(chip)
+	var status := _rich(16)
+	status.fit_content = true
+	status.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var extra := _overpaid() if result.ok else 0
+	if extra > 0:
+		status.text = "[center][color=#ff4a3a]Paid, with %d card%s more than needed[/color][/center]" % [extra, "" if extra == 1 else "s"]
+	elif result.ok:
+		status.text = "[center][color=#8fe388]✓ Paid: ready to build[/color][/center]"
+	elif not _can_afford(_build_card):
+		# Selectable all the same: to see what it lacks.
+		status.text = "[center][color=#ff4a3a]Your hand and crew can't pay for it[/color][/center]"
 	else:
-		# What discarding gives (the sentence that used to sit in the action bar).
-		var rates := _rich(15)
-		rates.fit_content = true
-		rates.autowrap_mode = TextServer.AUTOWRAP_OFF
-		rates.add_theme_color_override("default_color", Color(1, 0.92, 0.8))
-		# One rule per line: on a single line it ran wider than the crew area.
-		rates.text = "\n".join([
-			"[color=#c9a76a]Discard 1 card →[/color] %s or %s or its resource" % [_res("cs", 14), _res("c", 14)],
-			"[color=#c9a76a]Discard 2 cards →[/color] any resource",
-			"[color=#c9a76a]Windfall →[/color] %s%s" % [_res("cs", 14), _res("cs", 14)]])
-		_pay_body.add_child(rates)
-	if _pay_windfall:
-		var dest := OptionButton.new()
-		dest.add_item("Windfall goes to the Infamy deck", DeckhandGame.WINDFALL_DECK)
-		for slot in game.unrevealed_slots():
-			dest.add_item("Windfall goes on Row slot %d" % (slot + 1), slot)
-		dest.select(maxi(dest.get_item_index(_windfall_dest), 0))
-		dest.item_selected.connect(func(i: int) -> void: _windfall_dest = dest.get_item_id(i))
-		dest.size_flags_horizontal = SIZE_SHRINK_BEGIN
-		_pay_body.add_child(dest)
+		# What is left to pay has a red border above.
+		status.text = "[center][color=#ffe0a0]Pick hand cards to discard[/color][/center]"
+	left.add_child(status)
+	if crew_missing.is_empty():
+		var all_crew := _label("Your crew pays it all.", 15, Color(0.75, 0.95, 0.7))
+		all_crew.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		left.add_child(all_crew)
+		return
+	columns.add_child(_gold_line(true))
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 6)
+	right.size_flags_vertical = SIZE_SHRINK_CENTER
+	columns.add_child(right)
+	# What discarding gives, each way with how often this payment uses it:
+	# lit with a count when used, dimmed when not.
+	var used: Dictionary = result.get("used", {})
+	# The cards used each way, for the rows' tooltips.
+	var by_way := {"single": [], "pair": [], "windfall": []}
+	for payer: Dictionary in result.get("payers", []):
+		var kind: String = payer.get("kind", "crew")
+		if kind == "single":
+			by_way.single.append(_pay_card_name(payer.discard))
+		elif kind == "pair":
+			by_way.pair.append("%s + %s" % [_pay_card_name(payer.discards[0]), _pay_card_name(payer.discards[1])])
+		elif kind == "windfall" and by_way.windfall.is_empty():
+			by_way.windfall.append("your Windfall")
+	var rates := _with_tips(_rich(16))
+	rates.fit_content = true
+	rates.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var rules := [
+		[used.get("single", 0), "Discard 1 card →", "%s or %s or its resource" % [_res("cs", 15), _res("c", 15)], "single"],
+		[used.get("pair", 0), "Discard 2 cards →", "any resource", "pair"],
+		[used.get("windfall", 0), "Windfall →", "%s%s or %s%s" % [_res("cs", 15), _res("cs", 15), _res("c", 15), _res("cs", 15)], "windfall"],
+	]
+	var table := "[table=2]"
+	for rule: Array in rules:
+		var count: int = rule[0]
+		if result.ok and count == 0:
+			continue # paid: only the ways it is paid
+		var mark := "[color=#8fe388][b]×%d[/b][/color]" % count if count > 0 else ""
+		var label_color := "#ffe0a0" if count > 0 else "#a08a68"
+		var text_color := "#fff2dc" if count > 0 else "#b8a88c"
+		var line := "[color=%s][b]%s[/b][/color] [color=%s]%s[/color]" % [label_color, rule[1], text_color, rule[2]]
+		var cards: Array = by_way[rule[3]]
+		if not cards.is_empty():
+			line = _tip("Used for this payment: %s." % ", ".join(cards), line)
+		table += "[cell padding=0,0,8,0]%s[/cell][cell]%s[/cell]" % [mark, line]
+	rates.text = table + "[/table]"
+	right.add_child(rates)
+	if _pay_windfall and not game.unrevealed_slots().is_empty():
+		right.add_child(_label("After Build, you choose where your Windfall goes.", 14, Color(0.85, 0.78, 0.65)))
 
-## One cost icon with what pays it underneath.
+## One cost icon; still to pay, it has a red border.
+## What pays a cost token, in words (see Payment.evaluate's payers; the
+## discards are the current payment's).
+func _payer_text(payer: Dictionary) -> String:
+	match payer.get("kind", ""):
+		"crew":
+			return "your crew's %s" % CardDB.title(_crew_slot_card(payer.slot))
+		"single":
+			return "discarding %s" % _pay_card_name(payer.discard)
+		"pair":
+			return "discarding %s and %s (2 cards: any resource)" % [_pay_card_name(payer.discards[0]), _pay_card_name(payer.discards[1])]
+		"windfall":
+			return "discarding your Windfall"
+	return "?"
+
+## A discard of the current payment by index (the one past the cards: the Windfall).
+func _pay_card_name(index: int) -> String:
+	return CardDB.title(_pay[index]) if index < _pay.size() else "your Windfall"
+
+## The crew card whose production is slot `slot` (crew_production_slots order).
+func _crew_slot_card(slot: int) -> int:
+	var k := 0
+	for id: int in game.players[_seat].crew:
+		for _s in CardDB.get_card(id).production:
+			if k == slot:
+				return id
+			k += 1
+	return -1
+
+func _chip_icon(chip: Control) -> TextureRect:
+	return chip.find_children("*", "TextureRect", true, false)[0]
+
 func _cost_chip(token: String, mark: String) -> Control:
 	var chip := VBoxContainer.new()
 	chip.add_theme_constant_override("separation", 2)
@@ -2659,16 +2938,31 @@ func _cost_chip(token: String, mark: String) -> Control:
 	icon.texture = load("%sres-%s.png" % [ICONS, token])
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	icon.custom_minimum_size = Vector2(40, 40)
+	icon.custom_minimum_size = Vector2(50, 50)
 	icon.tooltip_text = CardDB.RESOURCE_NAMES[token]
-	if mark == "missing":
-		icon.modulate = Color(1, 1, 1, 0.35)
-	chip.add_child(icon)
-	var spec: Array = {"crew": ["✓ crew", Color(0.6, 0.92, 0.55)], "discard": ["✓ discard", GOLD], "missing": ["needed", Color(0.95, 0.6, 0.55)]}[mark]
-	var caption := _label(spec[0], 12, spec[1], true)
-	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	chip.add_child(caption)
+	# A border following its shape: red still to pay, green paid (by the
+	# crew or discards). Drawn inset in a bigger rect (room for the border),
+	# at the same size as without.
+	var material := ShaderMaterial.new()
+	material.shader = OUTLINE_GLOW
+	material.set_shader_parameter("inset", MISSING_INSET)
+	material.set_shader_parameter("glow_color", MISSING_GLOW if mark == "missing" else PAID_GLOW)
+	icon.material = material
+	icon.custom_minimum_size = Vector2(50, 50) / (1.0 - 2.0 * MISSING_INSET)
+	# Keep the row's spacing: the extra room overlaps the neighbours.
+	var spot := Control.new()
+	spot.custom_minimum_size = Vector2(50, 50)
+	spot.mouse_filter = MOUSE_FILTER_IGNORE
+	icon.position = (spot.custom_minimum_size - icon.custom_minimum_size) / 2.0
+	icon.size = icon.custom_minimum_size
+	spot.add_child(icon)
+	chip.add_child(spot)
 	return chip
+
+const OUTLINE_GLOW := preload("res://scenes/game/outline_glow.gdshader")
+const MISSING_INSET := 0.14 # of the icon's rect, each side: room for its border
+const MISSING_GLOW := Color(1.0, 0.1, 0.05, 1.0)
+const PAID_GLOW := Color(0.3, 0.95, 0.35, 0.85)
 
 func _show_pay_panel(on: bool) -> void:
 	if on == _pay_panel.visible and not _pay_panel.has_meta("hiding"):
@@ -2691,13 +2985,18 @@ func _show_pay_panel(on: bool) -> void:
 			_pay_panel.visible = false
 			_pay_panel.remove_meta("hiding"))
 
-## Bottom-left of the crew area, just above the action bar.
+const PAY_PANEL_GAP := 40.0 # above the action bar: room for the panel's shadow
+
+## Centred over the crew area, just above the action bar.
 func _place_pay_panel() -> void:
 	if not _pay_panel.visible:
 		return
 	_pay_panel.reset_size()
 	var crew := _crew_panel.get_global_rect()
-	_pay_panel.position = Vector2(crew.position.x + 14.0, crew.end.y - _pay_panel.size.y - 10.0)
+	var x := clampf(crew.get_center().x - _pay_panel.size.x / 2.0, crew.position.x + 8.0, crew.end.x - _pay_panel.size.x - 8.0)
+	# Clear of the action bar, its shadow included.
+	var bottom := minf(crew.end.y, _action_bar.get_global_rect().position.y)
+	_pay_panel.position = Vector2(x, bottom - _pay_panel.size.y - PAY_PANEL_GAP)
 
 # --- Overlays for choices ---------------------------------------------------
 
@@ -2784,7 +3083,34 @@ func _render_waiting_overlay(waiting: Array) -> void:
 	var names := waiting.map(func(p: int) -> String: return "[b]%s[/b]" % game.players[p].name)
 	_show_overlay("Waiting for the other pirates…", "Your choice is made. Still choosing: %s." % ", ".join(names))
 
+## Building with your Windfall: it goes into the Infamy deck, or face down
+## on a Row slot (revealed with that round's card). Both glow on the table,
+## to be clicked; this says so.
+func _render_windfall_overlay() -> void:
+	var windfall: int = game.players[_seat].windfall
+	var spot := _show_overlay("Where does your Windfall go?",
+		"You discard [b]%s[/b] to pay. Click the [b]Infamy deck[/b] to shuffle it in, or a face-down [b]Row slot[/b] to stack it there: it is revealed with that slot's card, at the start of that round." % CardDB.title(windfall))
+	spot.queue_free() # no cards here: the choices are on the table
+	_overlay_buttons([["« Back to payment", func() -> void:
+		_windfall_step = false
+		_queue_refresh()]])
+
+## Whether the Row slots and the Infamy deck are offered for your Windfall.
+func _picking_windfall() -> bool:
+	var decision: Variant = game.pending.get(_seat)
+	return _windfall_step and decision != null and decision.type == "build" and not _hold_choices and not _choice_sent()
+
+func _pick_windfall(dest: int) -> void:
+	if not _picking_windfall():
+		return
+	_sfx.play("card_flip", -4.0)
+	_windfall_dest = dest
+	_confirm_build()
+
 func _render_choice_overlay(decision: Dictionary) -> void:
+	if decision.type == "build" and _windfall_step:
+		_render_windfall_overlay()
+		return
 	match decision.type:
 		"draft_pick":
 			_render_draft_overlay(decision)
@@ -2807,7 +3133,7 @@ func _render_choice_overlay(decision: Dictionary) -> void:
 			_card_into(cards, decision.deck_card).set_caption("Infamy deck")
 			_overlay_buttons([["Keep the Row", func() -> void: _submit({"swap": false})], ["Swap", func() -> void: _submit({"swap": true})]])
 		"telescope_place":
-			var cards := _show_overlay("Telescope", "Last round: you may place the top Infamy card face up in the Row.")
+			var cards := _show_overlay("Telescope", "Last round: you may place the top Infamy card face up in the Row, in slot %d." % (game.place_slot() + 1))
 			_card_into(cards, decision.card)
 			_overlay_buttons([["Leave it", func() -> void: _submit({"place": false})], ["Place it", func() -> void: _submit({"place": true})]])
 		"hook_target":
@@ -2839,6 +3165,26 @@ func _telescope_fan(parent: HBoxContainer, ids: Array) -> void:
 		who.position = Vector2(20.0 + step * k + (OVERLAY_CARD.x - who.custom_minimum_size.x) / 2.0, OVERLAY_CARD.y + 18.0)
 		who.text = "[center]%s[/center]" % _row_origin(id)
 		fan.add_child(who)
+
+## Row slot `slot` face down: who put each of its cards there (bottom first),
+## for its tooltip. Public: stacking and swapping are done in the open.
+func _slot_story(slot: int) -> String:
+	var cards: Array = game.row[slot].cards
+	var lines: Array[String] = ["Round %d · face down%s" % [slot + 1, "" if cards.size() == 1 else ", %d cards" % cards.size()]]
+	for id: int in cards:
+		var origin: Dictionary = game.row_origins.get(id, {})
+		if origin.is_empty():
+			lines.append("• Dealt with the Row")
+			continue
+		var p: int = origin.player
+		var who: String = "you" if p == _seat else game.players[p].name
+		if origin.via == "swap":
+			lines.append("• Swapped in by %s (Telescope)" % who)
+		else:
+			lines.append("• %s Windfall, stacked" % ("Your" if p == _seat else who + "'s"))
+	if cards.size() > 1:
+		lines.append("All are revealed together at the start of round %d." % (slot + 1))
+	return "\n".join(lines)
 
 ## Who put a face-down Row card there, as shown under the Telescope's fan.
 func _row_origin(id: int) -> String:
@@ -3285,6 +3631,12 @@ func _animate_cards(snapshot: Dictionary) -> void:
 	var anchors: Dictionary = snapshot.anchors
 	_fresh.clear() # the snapshot was taken without them
 	var flying: Dictionary = snapshot.flying
+	# Cards a Telescope placed, claimed or contested at once: from where they
+	# were seen (its dialog) to their Row slot first.
+	for id: int in _placing.keys():
+		if poses.has(id) and _resolve_placed(id, poses[id]):
+			poses = poses.duplicate()
+			poses.erase(id)
 	var present := {}
 	var moving: Array[CardView] = []
 	var continuing: Array[CardView] = []
@@ -3604,19 +3956,18 @@ func _band_up() -> bool:
 ## A Battle is announced: when and how it will be fought. Battles announced
 ## before the band shows share it.
 func _battle_announced(p: int, source: int = -1) -> void:
+	# Its card glows from now (once at rest) until the Battle is fought: on
+	# from its other effects (a Hook) without a gap before the band.
+	_glow_battle(source, p)
 	if _announce_batch != null:
 		_announce_batch.counts[p] = _announce_batch.counts.get(p, 0) + 1
-		_announce_batch.sources.append(source)
 		return
-	var batch := {"counts": {p: 1}, "sources": [source]}
+	var batch := {"counts": {p: 1}}
 	_announce_batch = batch
 	_band("", BATTLE_COLOR, "", 0.0, false, {"ok": true, "after_landing": true, "icon": "fx-battle",
 		"compose": func() -> Dictionary:
 			if is_same(_announce_batch, batch):
 				_announce_batch = null
-			# The cards that announced them glow while the band is read.
-			for id: int in batch.sources:
-				_pulse_active(id, ACTIVE_BAND_TIME)
 			return _announce_text(batch.counts),
 	})
 
@@ -3646,7 +3997,7 @@ func _announce_text(counts: Dictionary) -> Dictionary:
 ## drawn added up.
 ## `count`: the cards drawn; `battles`: how many Battles were fought (a
 ## pirate's Battles announced together are fought at once).
-func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, details: Dictionary = {}, battles: int = 1) -> void:
+func _battle_fought(p: int, winner: int, scores: Dictionary, count: int, details: Dictionary = {}, battles: int = 1) -> void:
 	# Cards you draw (the last ones in your hand) stay hidden until the band
 	# has gone, then come from the Supply.
 	var drawn: Array = []
@@ -3655,12 +4006,20 @@ func _battle_fought(_p: int, winner: int, scores: Dictionary, count: int, detail
 		drawn = hand.slice(max(0, hand.size() - count))
 		for id: int in drawn:
 			_in_spotlight[id] = true
+	# The cards that announced this pirate's Battles glow on until its
+	# result band goes.
+	var fought: Array = []
+	for id: int in _battle_glow:
+		if _battle_glow[id].player == p and not _battle_glow[id].fought:
+			_battle_glow[id].fought = true
+			fought.append(id)
 	if _result_batch != null:
+		_result_batch.fought.append_array(fought)
 		_result_batch.count += count
 		_result_batch.battles += battles
 		_result_batch.drawn.append_array(drawn)
 		return
-	var batch := {"winner": winner, "scores": scores, "details": details, "count": count, "battles": battles, "drawn": drawn}
+	var batch := {"winner": winner, "scores": scores, "details": details, "count": count, "battles": battles, "drawn": drawn, "fought": fought}
 	_result_batch = batch
 	_band("", BATTLE_COLOR, "", 0.0, false, {"ok": true, "after_landing": true, "icon": "fx-battle",
 		"read_time": BAND_READ_TIME * 1.3, # a table to read
@@ -3692,7 +4051,10 @@ func _result_band(batch: Dictionary) -> Dictionary:
 	if winner >= 0 and scores.values().count(scores[winner]) > 1:
 		outcome = "Tie broken by Tentacles. " + outcome
 	return {"title": title, "extra": _battle_table(winner, scores, batch.details), "footer": outcome,
-		"on_close": func() -> void: _deal_from_supply(batch.drawn)}
+		"on_close": func() -> void:
+			_deal_from_supply(batch.drawn)
+			for id: int in batch.fought:
+				_unglow_battle(id)}
 
 const BATTLE_COLOR := Color(1.0, 0.55, 0.4)
 
@@ -3710,7 +4072,6 @@ func _deal_from_supply(ids: Array) -> void:
 # --- Active cards: a halo while a card's effect resolves --------------------
 
 const ACTIVE_PULSE := 1.6 # a quick effect (a draw): how long its card glows
-const ACTIVE_BAND_TIME := 3.0 # a Battle announced: while its band is read
 
 ## Card `id` glows (`on`) or stops (each reason counted: it glows while any
 ## remains).
@@ -3728,19 +4089,55 @@ func _set_active(id: int, on: bool) -> void:
 
 ## Card `id` glows for `seconds`, once it is at rest in its crew (a card
 ## still flying there, shown mid-table first, or your cards still landing).
-func _pulse_active(id: int, seconds: float = ACTIVE_PULSE) -> void:
+## With `player`, that pirate's glows take turns (two cards drawing at once).
+## With `cause` (the card whose arrival set it off), both glow together.
+func _pulse_active(id: int, seconds: float = ACTIVE_PULSE, player: int = -1, cause: int = -1) -> void:
 	if id < 0 or not is_inside_tree():
 		return
 	var waited := 0.0
-	while is_inside_tree() and waited < LANDING_TIMEOUT and not _rests_in_crew(id):
+	while is_inside_tree() and waited < LANDING_TIMEOUT and not (_rests_in_crew(id) and (cause < 0 or _rests_in_crew(cause))):
 		await get_tree().process_frame
 		waited += get_process_delta_time()
 	if not is_inside_tree():
 		return
 	var g := game
+	if player >= 0:
+		var now := Time.get_ticks_msec()
+		var start: int = maxi(now, _glow_free_at.get(player, 0))
+		_glow_free_at[player] = start + int((seconds + 0.2) * 1000.0)
+		if start > now:
+			await get_tree().create_timer((start - now) / 1000.0).timeout
+			if not is_inside_tree() or not is_same(g, game):
+				return
 	_set_active(id, true)
+	_set_active(cause, true)
 	await get_tree().create_timer(seconds).timeout
 	if is_inside_tree() and is_same(g, game):
+		_set_active(id, false)
+		_set_active(cause, false)
+
+## Card `id` announced a Battle for `player`: it glows, once at rest in the
+## crew, until that Battle is fought.
+func _glow_battle(id: int, player: int) -> void:
+	if id < 0 or _battle_glow.has(id) or game.players[player].pending_battles == 0:
+		return # (fought already)
+	var g := game
+	var glow := {"player": player, "fought": false, "lit": false}
+	_battle_glow[id] = glow
+	var waited := 0.0
+	while is_inside_tree() and waited < LANDING_TIMEOUT and not _rests_in_crew(id):
+		await get_tree().process_frame
+		waited += get_process_delta_time()
+	if is_inside_tree() and is_same(g, game) and is_same(_battle_glow.get(id), glow):
+		glow.lit = true
+		_set_active(id, true)
+
+func _unglow_battle(id: int) -> void:
+	var glow: Variant = _battle_glow.get(id)
+	if glow == null:
+		return
+	_battle_glow.erase(id)
+	if glow.lit:
 		_set_active(id, false)
 
 func _rests_in_crew(id: int) -> bool:
@@ -3802,10 +4199,35 @@ func _await_landing(id: int) -> void:
 			waited += get_process_delta_time()
 	if not _landing.has(gate):
 		return # a new game started meanwhile
+	# Still a gate meanwhile: Hooks and Battles wait for the draws too.
+	await _play_draws(gate)
+	if not _landing.has(gate):
+		return
 	_landing.erase(gate)
-	_deal_from_supply(gate.draws)
 	_spotlights -= 1
 	_release_hold()
+
+const DRAW_GLOW_LEAD := 0.35 # a card glows a moment before its cards are dealt
+const DRAW_STEP := 1.0 # then glows on while they fly to the hand
+
+## The cards drawn while a card was landing, dealt card by card that drew
+## them: each glows as its cards come from the deck, one after another.
+func _play_draws(gate: Dictionary) -> void:
+	for group: Dictionary in gate.draws:
+		if not is_inside_tree() or not _landing.has(gate):
+			return
+		var cause: int = group.get("cause", -1)
+		_set_active(group.source, true)
+		_set_active(cause, true)
+		await get_tree().create_timer(DRAW_GLOW_LEAD).timeout
+		if not is_inside_tree() or not _landing.has(gate):
+			return
+		_deal_from_supply(group.cards)
+		await get_tree().create_timer(DRAW_STEP).timeout
+		if not is_inside_tree() or not _landing.has(gate):
+			return
+		_set_active(group.source, false)
+		_set_active(cause, false)
 
 const LANDING_TIMEOUT := 8.0 # never hold the game on a lost animation
 
@@ -3888,6 +4310,69 @@ func _spotlight_claim(id: int, from: Dictionary, claimer: int) -> void:
 
 ## A contested Infamy card (a tie: nobody gets it): shown mid-table with who
 ## tied for it, then it burns away.
+## A card a Telescope placed in the Row, claimed or contested at once (so
+## never laid out there): it is first seen going from the Infamy deck to its
+## slot, turning over, then `then` is called with its pose there. False if
+## it was not placed.
+func _show_placed(id: int, then: Callable, from: Dictionary = {}) -> bool:
+	if not _placing.has(id):
+		return false
+	var slot: int = _placing[id]
+	_placing.erase(id)
+	var screen := get_viewport_rect().size
+	if from.is_empty():
+		# Placed by another pirate: from the Infamy deck.
+		from = {"center": screen / 2.0, "size": PILE_CARD, "rotation": 0.0, "face_up": false}
+		var pile: CardView = _pile_views.get("infamy")
+		if is_instance_valid(pile) and pile.is_inside_tree():
+			from = CardMotion.pose_of(pile, false)
+	_place_flight(id, slot, from, then)
+	return true
+
+func _place_flight(id: int, slot: int, from: Dictionary, then: Callable) -> void:
+	# The Row was just rebuilt: measure its slot once it is laid out.
+	var g := game
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_inside_tree() or not is_same(g, game):
+		return
+	var to := {"center": from.center, "size": ROW_CARD, "rotation": 0.0, "face_up": true}
+	var slots := _row_box.get_children().filter(func(n: Node) -> bool: return not n.is_queued_for_deletion())
+	if slot < slots.size() and (slots[slot] as Control).get_child_count() > 0:
+		to.center = ((slots[slot] as Control).get_child(0) as Control).get_global_rect().get_center()
+	_sfx.play("card_flip", -4.0)
+	_motion.fly(id, from, to, {"duration": 0.8, "lift": 0.15, "arc": 50.0,
+		"on_land": func(pose: Dictionary) -> void:
+			# It lies in the Row a moment, then is claimed or contested.
+			var stand_in := CardView.make(id, pose.size, true)
+			stand_in.interactive = false
+			stand_in.mouse_filter = MOUSE_FILTER_IGNORE
+			stand_in.position = pose.center - pose.size / 2.0
+			_motion.add_child(stand_in)
+			await get_tree().create_timer(PLACED_SHOW_TIME).timeout
+			if is_inside_tree() and is_same(g, game):
+				then.call(pose)
+			# (the stage's own copy takes its place)
+			await get_tree().process_frame
+			stand_in.queue_free()})
+
+const PLACED_SHOW_TIME := 1.0 # a placed card lies in the Row before it is claimed or contested
+
+## A card a Telescope placed, claimed or contested at once: shown going to
+## its slot (from `from`: where it was seen), then claimed or contested.
+func _resolve_placed(id: int, from: Dictionary = {}) -> bool:
+	if not _placing.has(id):
+		return false
+	if _lost.has(id):
+		var rivals: Array = _lost[id]
+		_lost.erase(id)
+		return _show_placed(id, func(pose: Dictionary) -> void: _contested(id, pose, rivals), from)
+	if _claimed.has(id):
+		var claimer: int = _claimed[id]
+		_claimed.erase(id)
+		return _show_placed(id, func(pose: Dictionary) -> void: _spotlight_claim(id, pose, claimer), from)
+	return false
+
 func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 	var names: Array[String] = []
 	for p: int in rivals:
@@ -3896,7 +4381,9 @@ func _contested(id: int, from: Dictionary, rivals: Array) -> void:
 	var caption := "[center][font_size=%d][b][color=#ff8a70]Contested![/color][/b][/font_size]\n%s tie for it: nobody claims it.[/center]" % [_fs(32), tied]
 	_spotlight(id, from, caption, -1, func(pose: Dictionary) -> void:
 		_sfx.play("burn")
-		_motion.burn(id, pose))
+		_motion.burn(id, pose), true, null, 0.85, -1, -1, CONTESTED_SHOW_TIME)
+
+const CONTESTED_SHOW_TIME := 2.7 # on show mid-table: time to read who tied
 
 ## Shows Infamy card `id` in the middle of the dimmed table: it flies there
 ## from pose `from`, turning face up, with `caption` under it; after a moment
@@ -3930,7 +4417,7 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 		revealed.rotation = from.rotation
 		_motion.add_child(revealed)
 		_sfx.play("card_flip", -4.0)
-		_motion.fly(id, from, up, {"target": revealed, "duration": 0.45, "arc": 0.0, "lift": 0.12, "glow": claimed})
+		_motion.fly(id, from, up, {"target": revealed, "zone": "stage", "duration": 0.45, "arc": 0.0, "lift": 0.12, "glow": claimed})
 		from = up
 	else:
 		# A copy stays where the card lay while it waits its turn on stage,
@@ -4034,7 +4521,8 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	if slot == 0:
 		_sfx.play("reveal", -4.0)
 	var to := {"center": center, "size": card_size, "rotation": 0.0, "face_up": true}
-	_motion.fly(id, from, to, {"target": view, "duration": fly_time, "lift": 0.25, "arc": 70.0})
+	# ("stage": a refresh meanwhile must not send it off again.)
+	_motion.fly(id, from, to, {"target": view, "zone": "stage", "duration": fly_time, "lift": 0.25, "arc": 70.0})
 	var tween := create_tween()
 	tween.tween_property(dim, "modulate:a", 1.0, 0.4)
 	for node: Control in extras:
@@ -4059,6 +4547,40 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 			_stage_leave(group.ticket)
 		_spotlights -= 1
 		_release_hold())
+
+const WINDFALL_SPOT_KEY := 2000
+const WINDFALL_SHOW_TIME := 3.0 # on show mid-table: time to read its caption
+
+## The game begins: your Windfall comes from the Infamy deck, turning over,
+## is shown a moment mid-table, and goes to your hand.
+func _present_windfall() -> void:
+	var id: int = game.players[_seat].windfall
+	if id < 0:
+		return
+	_in_spotlight[id] = true # hidden in your hand meanwhile
+	_spotlights += 1
+	_hold_choices = true
+	var g := game
+	for _i in range(3): # the table is laid out
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	if not is_same(g, game):
+		return
+	var from := {"center": get_viewport_rect().size / 2.0, "size": PILE_CARD, "rotation": 0.0, "face_up": false}
+	var pile: CardView = _pile_views.get("infamy")
+	if is_instance_valid(pile) and pile.is_inside_tree():
+		from = CardMotion.pose_of(pile, false)
+	var caption := "[center][font_size=%d][b][color=#ffd36b]Your Windfall[/color][/b][/font_size]\nIt stays in your hand: discard it to pay 2 coins when you build.[/center]" % _fs(30)
+	_spotlight(id, from, caption, WINDFALL_SPOT_KEY, func(pose: Dictionary) -> void:
+		_in_spotlight.erase(id)
+		var target := _hand_view(id)
+		if target == null:
+			_queue_refresh()
+			return
+		_motion.fly(id, pose, CardMotion.pose_of(target, true), {
+			"target": target, "zone": "hand", "duration": 0.8, "lift": 0.08, "arc": 40.0,
+		}), false, null, 0.85, -1, -1, WINDFALL_SHOW_TIME)
 
 ## Spotlight keys for Hooks, apart from the claimers' (player indices) and
 ## contested cards (-1).
@@ -4347,6 +4869,8 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			_sfx.play("bell", -3.0)
 			# The first round's card waits for the table to fade in.
 			_round_title(game.round_index, game.wind(), 1.3 if _curtain.visible else 0.0)
+			if game.round_index == 1:
+				_present_windfall()
 		"reveal":
 			_sfx.play("reveal")
 		"deal":
@@ -4368,18 +4892,27 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"effect":
 			# Hooks glow with their ceremony, Battles with their band;
 			# Compasses work in the draft.
-			if not info.effect in ["hook", "battle", "compass"]:
+			if info.effect in ["hook", "battle", "compass"]:
+				pass
+			elif info.effect.begins_with("draw-"):
+				# Yours glow as their cards are dealt (see _play_draws);
+				# others' one after another.
+				if p != _seat or _landing.is_empty():
+					_pulse_active(info.source, ACTIVE_PULSE, p, info.get("cause", -1))
+			else:
 				_pulse_active(info.source)
 		"draw":
 			if p == _seat and info.has("cards") and not _landing.is_empty():
 				# Drawn by a card still landing: dealt once it has.
 				for id: int in info.cards:
 					_in_spotlight[id] = true
-				_landing[-1].draws.append_array(info.cards)
+				_landing[-1].draws.append({"source": info.get("source", -1), "cause": info.get("cause", -1), "cards": info.cards})
 			else:
 				_sfx.play("card_deal", volume - 4.0)
 		"telescope":
 			_sfx.play("telescope", volume)
+			if info.has("placed"):
+				_placing[info.placed] = info.slot
 		"shuffle":
 			_shuffle_pile(info.deck)
 		"hook":
@@ -4402,12 +4935,16 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"claim":
 			_sfx.play("claim", volume)
 			_claimed[info.card] = p
+			if _placing.has(info.card):
+				_in_spotlight[info.card] = true # shown placed in the Row first
 			_spotlights += 1
 			_hold_choices = true
 			# If the card was not on the table to animate from, show it anyway.
 			var claimed_card: int = info.card
 			get_tree().create_timer(0.5).timeout.connect(func() -> void:
 				if _claimed.has(claimed_card):
+					if _resolve_placed(claimed_card):
+						return
 					var claimer: int = _claimed[claimed_card]
 					_claimed.erase(claimed_card)
 					var middle := get_viewport_rect().size / 2.0
@@ -4421,6 +4958,8 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			var card: int = info.card
 			get_tree().create_timer(0.5).timeout.connect(func() -> void:
 				if _lost.has(card):
+					if _resolve_placed(card):
+						return
 					var rivals: Array = _lost[card]
 					_lost.erase(card)
 					var center := get_viewport_rect().size / 2.0
@@ -4434,9 +4973,12 @@ func _on_hand_clicked(view: CardView) -> void:
 		return # nothing to choose, or the card is not on show yet
 	if not _hand_click_passes():
 		return
-	_sfx.play("card_flip", -6.0)
 	var is_windfall: bool = view.get_meta("windfall", false)
 	var id := view.card_id
+	if decision.type == "build" and _windfall_step:
+		return # choosing where the Windfall goes (or back to the payment)
+	_sfx.play("card_flip", -6.0)
+	_confirming = "" # changing the choice: ask again if need be
 	match decision.type:
 		"build":
 			if is_windfall:
@@ -4470,10 +5012,18 @@ func _on_hand_clicked(view: CardView) -> void:
 func _auto_pay() -> void:
 	var others: Array = game.players[_seat].hand.filter(func(id: int) -> bool: return id != _build_card)
 	var keep := func(id: int) -> float: return DeckhandBot.keep_value(game, _seat, id)
-	var windfall_value := INF if game.players[_seat].windfall < 0 else 1.0
+	# The Windfall pays 2 coins as one discard: worth it for 2, wasteful for
+	# 1. Priced at 1.5 of the cheapest card, the planner picks it for 2 coins
+	# and a single card for 1.
+	var windfall_value := INF
+	if game.players[_seat].windfall >= 0:
+		var cheapest := INF
+		for id: int in others:
+			cheapest = minf(cheapest, keep.call(id))
+		windfall_value = 1.0 if cheapest == INF else cheapest * 1.5
 	var plan := Payment.plan(CardDB.get_card(_build_card).cost, game.crew_production_slots(_seat), others, keep, windfall_value)
 	if not plan.ok:
-		_flash("Not enough cards to pay for this one.")
+		_flash("Your hand and crew can't pay for %s." % CardDB.title(_build_card))
 		return
 	_pay.assign(plan.discards)
 	_pay_windfall = plan.windfall
@@ -4481,6 +5031,15 @@ func _auto_pay() -> void:
 	_render_action()
 
 func _confirm_build() -> void:
+	# Paying with the Windfall: where it goes is asked next (if there is a
+	# choice: a face-down Row slot to stack it on).
+	if _pay_windfall and not _windfall_step and not game.unrevealed_slots().is_empty():
+		_windfall_step = true
+		_queue_refresh()
+		return
+	if not _pay_windfall or game.unrevealed_slots().is_empty():
+		_windfall_dest = DeckhandGame.WINDFALL_DECK
+	_windfall_step = false
 	_submit({
 		"card": _build_card,
 		"discards": _pay.duplicate(),
@@ -4874,7 +5433,12 @@ func _describe(id: int) -> void:
 		for row: Array in effects:
 			_info_effect(row[0], row[1])
 
-	if game != null and card.kind == "supply" and not game.players[_seat].crew.has(id):
+	var use := _discard_use(id) if game != null else ""
+	if not use.is_empty():
+		# Picked to pay for the card being built: what it pays, highlighted.
+		_info_line()
+		_info_highlight(_info_rows([["Discard", use]]))
+	elif game != null and card.kind == "supply" and not game.players[_seat].crew.has(id):
 		# What discarding it pays: a coin, or (revealed) one of its resources.
 		var options := [_res("cs", 24), _res("c", 24)]
 		for token in CardDB.production_tokens(id):
@@ -4904,13 +5468,68 @@ func _info_text(bbcode: String, font_size: int) -> RichTextLabel:
 	return label
 
 ## Rows of [label, icons]: labels small and muted in a column of their own.
-func _info_rows(rows: Array, alpha: float = 1.0) -> void:
+func _info_rows(rows: Array, alpha: float = 1.0) -> RichTextLabel:
 	if rows.is_empty():
-		return
+		return null
 	var text := "[table=2]"
 	for row: Array in rows:
 		text += "[cell padding=0,2,12,2][color=#7a6248][font_size=%d]%s[/font_size][/color][/cell][cell padding=0,2,0,2]%s[/cell]" % [_fs(13), row[0], row[1]]
-	_info_text(text + "[/table]", 15).modulate.a = alpha
+	var label := _info_text(text + "[/table]", 15)
+	label.modulate.a = alpha
+	return label
+
+## Sets `label` (in the tooltip) on a light gold box, to stand out.
+func _info_highlight(label: RichTextLabel) -> void:
+	var box := PanelContainer.new()
+	box.mouse_filter = MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(1.0, 0.84, 0.42, 0.5)
+	style.border_color = Color(0.72, 0.48, 0.14, 0.85)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	style.set_content_margin_all(6)
+	box.add_theme_stylebox_override("panel", style)
+	_zoom_info.add_child(box)
+	label.custom_minimum_size.x -= 12.0
+	label.reparent(box)
+
+## Card `id` picked to pay for the card being built: what it pays, in
+## words ("" if it is not in the payment).
+func _discard_use(id: int) -> String:
+	var decision: Variant = game.pending.get(_seat)
+	if decision == null or decision.type != "build" or _build_card < 0:
+		return ""
+	var index := _pay.find(id)
+	if index < 0:
+		if id != game.players[_seat].windfall or not _pay_windfall:
+			return ""
+		index = _pay.size() # the Windfall
+	var title := CardDB.title(_build_card)
+	var cost: Array = CardDB.get_card(_build_card).cost
+	var payers: Array = game.check_payment(_seat, _build_card, _pay, _pay_windfall).get("payers", [])
+	var alone: Array[String] = []
+	var paired: Array[String] = []
+	for i in range(payers.size()):
+		var payer: Dictionary = payers[i]
+		match payer.get("kind", ""):
+			"single":
+				if payer.discard == index:
+					alone.append(_res(cost[i], 22))
+			"windfall":
+				if index == _pay.size():
+					alone.append(_res(cost[i], 22))
+			"pair":
+				if (payer.discards as Array).has(index):
+					var other: int = payer.discards[0] if payer.discards[1] == index else payer.discards[1]
+					paired.append("%s together with %s" % [_res(cost[i], 22), _pay_card_name(other)])
+	if alone.is_empty() and paired.is_empty():
+		return "[color=#b02010][b]Not needed for %s[/b][/color]" % title
+	var parts: Array[String] = []
+	if not alone.is_empty():
+		parts.append("Pays %s for %s" % [" ".join(alone), title])
+	for text in paired:
+		parts.append("Pays %s" % text)
+	return "\n".join(parts)
 
 ## One effect: its icon, then its text wrapping in a block of its own.
 func _info_effect(icon: String, text: String) -> void:

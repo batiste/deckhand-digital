@@ -225,7 +225,7 @@ Instant effects trigger when the card is added to Crew.
 
 - Look at one face-down Infamy card in Row and top card of Infamy deck.
 - You may swap them.
-- In round 5, you may place top deck card face up in Row instead of swapping.
+- In round 5, you may place top deck card face up in Row instead of swapping: in the rightmost empty Row slot, or on the last slot if none is empty.
 - Then shuffle Infamy deck.
 
 ### 13.2 Draw Effects

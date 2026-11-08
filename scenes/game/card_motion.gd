@@ -59,8 +59,8 @@ func in_flight() -> Dictionary:
 	var result := {}
 	for id: int in _flights:
 		var flight: Dictionary = _flights[id]
-		if flight.target == null:
-			continue # Leaving the table; let it finish.
+		if flight.target == null or flight.zone == "stage":
+			continue # Leaving the table, or going on show: let it finish.
 		var ghost: CardView = flight.ghost
 		var pose := pose_of(ghost, ghost.face_up)
 		# A ghost squashed mid-flip still has its full height.
