@@ -1,7 +1,7 @@
 class_name Effects
 ## A shader that reads TIME makes Godot redraw the whole screen every frame
 ## (60 a second), even if nothing else moves, and each redraw is the whole
-## table. So the ambient animation (candlelight, lantern, shimmer, gleams)
+## table. So the ambient animation (lantern, shimmer, gleams)
 ## runs on its own clock instead, ticked AMBIENT_HZ times a second: an idle
 ## table redraws that often, not 60 (with low-processor mode on, see
 ## project.godot). "Reduced effects" stops the clock: an idle table does not

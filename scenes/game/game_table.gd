@@ -15,6 +15,7 @@ const FONT_SYMBOLS := "res://scenes/shared/fonts/dejavu/DejaVuSans-Symbols.ttf"
 
 const HAND_CARD := Vector2(172, 235)
 const ROW_CARD := Vector2(126, 171)
+const ROW_STACK_SHIFT := 8.0 # sideways offset of the Infamy cards behind in a Row slot
 const PILE_CARD := Vector2(90, 122)
 ## Offset of each card edge drawn under a deck, for its thickness.
 const PILE_STEP := Vector2(1.0, 2.0)
@@ -26,6 +27,8 @@ const CREW_GROUPS := {"basic": "Basic", "advanced": "Advanced", "support": "Supp
 const CREW_MAX_COLUMNS := 6
 const OPP_CARD := Vector2(50, 68)
 const OPP_COLUMN_WIDTH := 340.0
+const OPP_SEAL := Vector2(52, 63) # an opponent's VP seal (yours is 77×93)
+const OPP_ICON := 16 # an opponent's banner and symbol icons (yours: 21, 20)
 const OVERLAY_CARD := Vector2(181, 247) # leaves even gaps around the choice
 const OVERLAY_CARD_SMALL := Vector2(135, 184)
 const LEDGER_WIDTH := 216.0
@@ -38,8 +41,16 @@ const ZOOM_CARD := Vector2(340, 462)
 const TEXT_SCALE := 1.15
 const LARGE_TEXT := 1.15 # "Larger text", on top of TEXT_SCALE
 const ICON_SCALE := 1.25
+# Text sizes at the table (before TEXT_SCALE), so they stay consistent:
+# titles, the things that matter (names, the action, buttons), standard
+# text, and subsidiary notes (captions, the log).
+const FS_TITLE := 22
+const FS_MAIN := 17
+const FS_BODY := 15
+const FS_SMALL := 13
 
 const WOOD := "res://assets/ui/wood.jpg"
+const FELT := "res://assets/ui/felt_frame.png" # green felt in a wooden frame (nine-patch)
 const ROUNDED_SHADER := preload("res://scenes/game/rounded_panel.gdshader")
 const SHINE_SHADER := preload("res://scenes/game/shine.gdshader")
 const RAYS_SHADER := preload("res://scenes/game/rays.gdshader")
@@ -99,6 +110,10 @@ var settings := {"opponents": 2, "solo": false, "beginner": false}
 var _bot_wait := 0.0
 var _hand_views: Array[CardView] = []
 var _hovered_hand: CardView = null
+var _hand_order: Array[int] = [] # your hand as you arranged it (card ids); new cards go last
+var _drag_view: CardView = null # the hand card being dragged to a new place
+var _drag_grab := 0.0 # where on it the pointer took hold (x)
+var _drag_x := 0.0 # its left edge, in hand area coordinates
 var _decision: Variant = null # the human decision the input state belongs to
 
 # Input state for the current human decision.
@@ -138,7 +153,9 @@ var _action_bar: Control
 var _pay_panel: PanelContainer # paying for a build: floats over the crew
 var _pay_body: VBoxContainer
 var _vp_text: RichTextLabel
-var _ledger_body: RichTextLabel
+var _ledger_body: RichTextLabel # banners and production
+var _ledger_symbols: RichTextLabel # beside the VP seal
+var _ledger_scroll: ScrollContainer
 var _hand_area: Control
 var _action_text: RichTextLabel
 var _buttons: HBoxContainer
@@ -308,6 +325,7 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_motion.settle()
 	_card_views.clear()
 	_hand_pose.clear()
+	_hand_order.clear()
 	_unplayed = {}
 	_shown.clear()
 	_claimed.clear()
@@ -535,12 +553,12 @@ func _build_ui() -> void:
 		plank.flip_v = i == 1
 		plank.mouse_filter = MOUSE_FILTER_IGNORE
 		planks.add_child(plank)
-	# Lamplight: a warm, flickering pool, the edges in shadow.
+	# Lamplight: a warm pool, the edges in shadow (static).
 	var candle := ColorRect.new()
 	candle.set_anchors_preset(PRESET_FULL_RECT)
 	candle.mouse_filter = MOUSE_FILTER_IGNORE
 	var light := ShaderMaterial.new()
-	Effects.use(light, preload("res://scenes/game/candlelight.gdshader"))
+	light.shader = preload("res://scenes/game/candlelight.gdshader")
 	candle.material = light
 	add_child(candle)
 	var shade := ColorRect.new()
@@ -573,9 +591,9 @@ func _build_ui() -> void:
 	var top := HBoxContainer.new()
 	top.add_theme_constant_override("separation", 16)
 	main.add_child(top)
-	_round_label = _label("", 24, GOLD, true)
+	_round_label = _label("", FS_TITLE, GOLD, true)
 	top.add_child(_round_label)
-	_phase_label = _label("", 17, MUTED)
+	_phase_label = _label("", FS_BODY, MUTED)
 	_phase_label.size_flags_horizontal = SIZE_EXPAND_FILL
 	_phase_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	top.add_child(_phase_label)
@@ -587,7 +605,7 @@ func _build_ui() -> void:
 	board.add_theme_constant_override("separation", 12)
 	main.add_child(board)
 	_board = board
-	var row_panel := _panel()
+	var row_panel := _felt_panel()
 	row_panel.size_flags_horizontal = SIZE_EXPAND_FILL
 	board.add_child(row_panel)
 	var row_v := VBoxContainer.new()
@@ -595,16 +613,13 @@ func _build_ui() -> void:
 	_row_box = HBoxContainer.new()
 	_row_box.add_theme_constant_override("separation", 16)
 	row_v.add_child(_row_box)
-	board.add_child(_gold_line(true))
-	var piles_panel := _panel()
+	var piles_panel := _felt_panel()
 	board.add_child(piles_panel)
 	var piles_v := VBoxContainer.new()
 	piles_panel.add_child(piles_v)
 	_piles_box = HBoxContainer.new()
 	_piles_box.add_theme_constant_override("separation", 10)
 	piles_v.add_child(_piles_box)
-
-	main.add_child(_gold_line(false))
 
 	# Your score and resources beside your crew; overlays sit right of it.
 	var home := HBoxContainer.new()
@@ -619,15 +634,28 @@ func _build_ui() -> void:
 	ledger_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	ledger_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
 	ledger.add_child(ledger_scroll)
+	_ledger_scroll = ledger_scroll
 	var ledger_v := VBoxContainer.new()
 	ledger_v.size_flags_horizontal = SIZE_EXPAND_FILL
-	ledger_v.add_theme_constant_override("separation", 0)
+	ledger_v.add_theme_constant_override("separation", 8)
 	ledger_scroll.add_child(ledger_v)
-	_ledger_body = _with_tips(_rich(15))
+	# Your score on the wax seal, your symbols beside it: as each opponent's.
+	var ledger_head := HBoxContainer.new()
+	ledger_head.add_theme_constant_override("separation", 8)
+	ledger_v.add_child(ledger_head)
+	var vp_seal := _wax_seal(Vector2(77, 93))
+	ledger_head.add_child(vp_seal)
+	_vp_text = _seal_text(vp_seal)
+	_ledger_symbols = _with_tips(_rich(FS_BODY))
+	_ledger_symbols.fit_content = true
+	_ledger_symbols.size_flags_vertical = SIZE_SHRINK_CENTER
+	ledger_head.add_child(_ledger_symbols)
+	_ledger_body = _with_tips(_rich(FS_BODY))
 	_ledger_body.fit_content = true
 	ledger_v.add_child(_ledger_body)
 
 	home.add_child(_gold_line(true))
+
 
 	# Your crew
 	var crew_panel := _panel()
@@ -652,19 +680,6 @@ func _build_ui() -> void:
 	_crew_columns = HBoxContainer.new()
 	_crew_columns.add_theme_constant_override("separation", 18)
 	crew_scroll.add_child(_crew_columns)
-	# Your score, on the wax seal in the crew's top-right corner.
-	var corner := Control.new()
-	corner.mouse_filter = MOUSE_FILTER_IGNORE
-	crew_panel.add_child(corner)
-	var vp_seal := _wax_seal(Vector2(77, 93))
-	vp_seal.anchor_left = 1.0
-	vp_seal.anchor_right = 1.0
-	vp_seal.offset_left = -77.0 - 10.0
-	vp_seal.offset_right = -10.0
-	vp_seal.offset_top = 8.0
-	vp_seal.offset_bottom = 8.0 + 93.0
-	corner.add_child(vp_seal)
-	_vp_text = _seal_text(vp_seal)
 	# How many columns fit depends on the width.
 	crew_scroll.resized.connect(func() -> void:
 		if game != null:
@@ -682,7 +697,7 @@ func _build_ui() -> void:
 	action_h.add_theme_constant_override("separation", 12)
 	action_h.custom_minimum_size.y = 42
 	action_panel.add_child(action_h)
-	_action_text = _rich(17)
+	_action_text = _rich(FS_MAIN)
 	_action_text.fit_content = true
 	_action_text.size_flags_horizontal = SIZE_EXPAND_FILL
 	_action_text.size_flags_vertical = SIZE_SHRINK_CENTER # centred in the bar
@@ -711,7 +726,7 @@ func _build_ui() -> void:
 	var log_panel := _panel()
 	log_panel.custom_minimum_size.y = 210
 	side.add_child(log_panel)
-	_log = _rich(14)
+	_log = _rich(FS_SMALL)
 	_log.scroll_following = true
 	log_panel.add_child(_log)
 
@@ -1642,7 +1657,8 @@ func _make_theme() -> Theme:
 	tip.shadow_size = 8
 	t.set_stylebox("panel", "TooltipPanel", tip)
 	t.set_color("font_color", "TooltipLabel", INK)
-	t.set_font_size("font_size", "TooltipLabel", _fs(15))
+	t.set_font_size("font_size", "TooltipLabel", _fs(FS_BODY))
+	t.set_font_size("font_size", "Button", _fs(FS_MAIN))
 	t.set_stylebox("slider", "HSlider", track)
 	t.set_stylebox("focus", "HSlider", focus)
 	t.set_stylebox("grabber_area", "HSlider", filled)
@@ -1748,6 +1764,20 @@ func _wood_panel(tint: Color = Color(0.5, 0.36, 0.24), shadow: bool = false) -> 
 	rounded.shader = Effects.frozen(ROUNDED_SHADER) # no lantern: never animates
 	panel.material = rounded
 	panel.resized.connect(func() -> void: rounded.set_shader_parameter("size", panel.size))
+	return panel
+
+## Green felt in a wooden frame: the frame's corners and edges keep their
+## size, the felt stretches to fit.
+func _felt_panel() -> PanelContainer:
+	var panel := PanelContainer.new()
+	var style := StyleBoxTexture.new()
+	style.texture = load(FELT)
+	style.set_texture_margin_all(24)
+	style.content_margin_left = 28
+	style.content_margin_right = 28
+	style.content_margin_top = 22
+	style.content_margin_bottom = 22
+	panel.add_theme_stylebox_override("panel", style)
 	return panel
 
 ## Full-rect image that covers its area (cropping as needed).
@@ -2009,7 +2039,10 @@ func _render_row() -> void:
 			var id: int = slot.cards[k]
 			var depth := n - 1 - k # 0 = in front
 			var view := _card(id, card_size.round())
-			view.position = Vector2((ROW_CARD.x - card_size.x) / 2.0 + (depth % 2) * 4.0 - 2.0 * signf(depth), depth * card_size.y * strip)
+			# Every other card behind a little left, then right, so the stack
+			# reads as cards laid one over the other.
+			var shift := 0.0 if depth == 0 else (ROW_STACK_SHIFT if depth % 2 == 1 else -ROW_STACK_SHIFT)
+			view.position = Vector2((ROW_CARD.x - card_size.x) / 2.0 + shift, depth * card_size.y * strip)
 			if game.can_claim(_seat, id):
 				view.mark = CardView.Mark.CLAIMABLE
 			view.set_requirement(_banners_met(_seat, id))
@@ -2137,71 +2170,62 @@ func _render_piles() -> void:
 		if spec[1] == 0:
 			view.modulate.a = 0.25
 		pile.add_child(view)
-		var caption := _label(spec[0], 13, MUTED)
+		var caption := _label(spec[0], FS_SMALL, MUTED)
 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		v.add_child(caption)
 
-## `fresh` banners (just raised) have their count in gold.
-func _player_summary(p: int, icon_size: int, fresh: Array = []) -> String:
+## A pirate's symbols (Tentacle, Battle, Hook, Compass) as cells, the same
+## for you and for each opponent: none at 0, the icon alone at 1, else
+## "icon count".
+func _symbol_cells(p: int, icon_size: int) -> Array[String]:
+	var cells: Array[String] = []
+	for spec in [["tentacles", "fx-tentacle"], ["battles", "fx-battle"], ["hooks", "fx-hook"], ["compasses", "fx-compass"]]:
+		var n := game.tentacles(p) if spec[0] == "tentacles" else game.symbol_count(p, spec[0])
+		if n <= 0:
+			continue
+		var tip: String = SYMBOL_TIPS[spec[1]]
+		if spec[0] == "compasses":
+			tip += " %d left this draft." % game.compasses_available(p)
+		var icon := _img(spec[1], icon_size)
+		cells.append(_tip(tip, icon if n == 1 else "%s\u00a0%d" % [icon, n]))
+	return cells
+
+## A grid of `cells`, `columns` to a row.
+static func _grid(cells: Array[String], columns: int) -> String:
+	var text := "[table=%d]" % columns
+	for cell in cells:
+		# Equal columns, so a wide entry does not push the others apart.
+		text += "[cell expand=1 padding=0,0,6,0]%s[/cell]" % cell
+	return text + "[/table]"
+
+## A pirate's banners, then production, each kind of icon once with its
+## count, in grids of `columns`: the same layout for your ledger and for each
+## opponent. `fresh` banners (just raised) have their count in gold.
+func _stats_text(p: int, icon_size: int, columns: int, fresh: Array = []) -> String:
+	var whose := "Your crew" if p == _seat else "Their crew"
 	var banners := game.raised_banners(p)
-	var parts: Array[String] = []
+	var cells: Array[String] = []
 	for b in CardDB.BANNERS:
 		if banners[b] > 0:
 			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
-			parts.append(_tip(_banner_tip(b), "%s%s" % [_banner(b, icon_size + 2), count]))
-	var banner_widths: Array[float] = []
-	for b in CardDB.BANNERS:
-		if banners[b] > 0:
-			banner_widths.append(_item_width(icon_size + 2, 1, banners[b]))
-	var prod: Array[String] = []
-	var prod_widths: Array[float] = []
+			cells.append(_tip(_banner_tip(b), "%s\u00a0%s" % [_banner(b, icon_size), count]))
+	var text := _ledger_section("Banners", cells, "none raised", columns)
+	cells = []
+	var choices: Array[String] = [] # "A or B" slots: too wide for one cell, half as many per row
+	var res_size := icon_size + 4 # resource icons have more margin
 	for group: Array in _production_groups(p):
-		prod.append(_tip(_slot_tip(group[0], group[1]).replace("Your crew", "Their crew"), "%s%d" % [_slot_icons(group[0], icon_size), group[1]]))
-		prod_widths.append(_item_width(icon_size, group[0].size(), group[1]))
-	# Labels on the left, their icons on the right: on two even lines when
-	# they do not fit on one (rather than a lone icon on a line of its own).
-	var font := get_theme_default_font()
-	var label_width := font.get_string_size("Produces", HORIZONTAL_ALIGNMENT_LEFT, -1, _fs(13)).x + 10.0
-	var room := OPP_COLUMN_WIDTH - 32.0 - label_width
-	var banner_text := _even_lines(parts, banner_widths, room) if not parts.is_empty() else "[color=#8a96a6]no banners[/color]"
-	var prod_text := _even_lines(prod, prod_widths, room) if not prod.is_empty() else "[color=#8a96a6]none[/color]"
-	var extras := _tip(SYMBOL_TIPS["fx-tentacle"], "%s%d" % [_img("fx-tentacle", icon_size), game.tentacles(p)])
-	for key in ["battles", "hooks", "compasses"]:
-		var n := game.symbol_count(p, key)
-		if n > 0:
-			var icon: String = {"battles": "fx-battle", "hooks": "fx-hook", "compasses": "fx-compass"}[key]
-			extras += "  " + _tip(SYMBOL_TIPS[icon], "%s%d" % [_img(icon, icon_size), n])
+		var tip := _slot_tip(group[0], group[1]).replace("Your crew", whose)
+		if (group[0] as Array).size() > 1:
+			# No count: each "A or B" pair is on one card only, so it is 1.
+			choices.append(_tip(tip, _slot_icons(group[0], res_size)))
+		else:
+			cells.append(_tip(tip, "%s\u00a0%d" % [_slot_icons(group[0], res_size), group[1]]))
+	text += _ledger_section("Produces", cells, "nothing yet" if choices.is_empty() else "", columns, not choices.is_empty())
+	if not choices.is_empty():
+		text += _ledger_section("", choices, "", maxi(2, columns / 2))
 	if game.players[p].pending_battles > 0:
-		extras += "  " + _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[p].pending_battles)
-	return "[table=2][cell padding=0,0,10,2]Banners[/cell][cell padding=0,0,0,2]%s[/cell][cell padding=0,0,10,2]Produces[/cell][cell padding=0,0,0,2]%s[/cell][/table]\n%s" % [banner_text, prod_text, extras]
-
-## About how wide an icon item is in the summary: `icons` icons (with a
-## slash between) and its count.
-func _item_width(icon_size: int, icons: int, count: int) -> float:
-	var digit := _fs(13) * 0.6
-	return icon_size * icons + (icons - 1) * digit + str(count).length() * digit + digit * 0.6
-
-## `items` joined by spaces, broken into as few lines as fit `room`, each
-## about as long as the others.
-static func _even_lines(items: Array[String], widths: Array[float], room: float) -> String:
-	var total := 0.0
-	for w in widths:
-		total += w
-	var lines := maxi(1, ceili(total / room))
-	if lines == 1:
-		return " ".join(items)
-	var target := total / lines
-	var out := ""
-	var line_width := 0.0
-	for i in range(items.size()):
-		if line_width > 0.0 and line_width + widths[i] / 2.0 > target and out.count("\n") < lines - 1:
-			out += "\n"
-			line_width = 0.0
-		elif line_width > 0.0:
-			out += " "
-		out += items[i]
-		line_width += widths[i]
-	return out
+		text += _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[p].pending_battles)
+	return text.strip_edges(false, true)
 
 ## `text` (BBCode allowed) in the title font.
 static func _fancy(text: String) -> String:
@@ -2267,8 +2291,15 @@ func _render_opponents() -> void:
 		var v := VBoxContainer.new()
 		v.add_theme_constant_override("separation", 4)
 		panel.add_child(v)
-		var head := _rich(16)
-		head.fit_content = true
+		# As your ledger: the score on a wax seal, the symbols beside it,
+		# then banners and production.
+		var head := HBoxContainer.new()
+		head.add_theme_constant_override("separation", 8)
+		v.add_child(head)
+		var seal := _wax_seal(OPP_SEAL)
+		head.add_child(seal)
+		var seal_text := _seal_text(seal)
+		var fresh := _show_gains(p, seal_text, "[center][font_size=%d][b]{vp}[/b][/font_size][/center]" % _fs(FS_MAIN), Vector2(OPP_SEAL.x * 0.3, 0.0), 0.75)
 		var status := ""
 		if game.phase == DeckhandGame.Phase.BUILD and pl.passed:
 			status = "  [color=#8a96a6](passed)[/color]"
@@ -2278,14 +2309,18 @@ func _render_opponents() -> void:
 			status = "  [color=#8a96a6](thinking…)[/color]"
 		elif game.has_answered(p) and not game.pending.is_empty():
 			status = "  [color=#8fe388]✓ ready[/color]"
-		var template := "[b]%s[/b]%s\n[color=#ffd36b]{vp} VP[/color]   ·   hand %d   ·   %s" % [
-			_who(p), status, game.hand_size(p),
-			"windfall ✓" if pl.windfall >= 0 else "no windfall"]
-		v.add_child(head)
-		var fresh := _show_gains(p, head, template, Vector2(0.0, head.get_theme_font("normal_font").get_height(_fs(16))), 0.75)
-		var summary := _with_tips(_rich(13))
+		var about := _with_tips(_rich(FS_MAIN))
+		about.fit_content = true
+		about.size_flags_vertical = SIZE_SHRINK_CENTER
+		var symbols := _symbol_cells(p, OPP_ICON)
+		about.text = "[b]%s[/b]%s\n%s[color=#8a96a6][font_size=%d]hand %d   ·   %s[/font_size][/color]" % [
+			_who(p), status,
+			"" if symbols.is_empty() else "[font_size=%d]%s[/font_size]\n" % [_fs(FS_BODY), "   ".join(symbols)],
+			_fs(FS_SMALL), game.hand_size(p), "windfall ✓" if pl.windfall >= 0 else "no windfall"]
+		head.add_child(about)
+		var summary := _with_tips(_rich(FS_BODY))
 		summary.fit_content = true
-		summary.text = _player_summary(p, 15, fresh)
+		summary.text = _stats_text(p, OPP_ICON, 5, fresh)
 		v.add_child(summary)
 		# One row; the cards overlap once they no longer fit side by side.
 		var row := HBoxContainer.new()
@@ -2320,7 +2355,7 @@ func _render_crew() -> void:
 			stacks.append(groups[group])
 			titles.append(CREW_GROUPS[group])
 	var area: Vector2 = (_crew_columns.get_parent() as Control).size
-	var probe := _label("Basic", 13)
+	var probe := _label("Basic", FS_SMALL)
 	var heading_height := probe.get_combined_minimum_size().y
 	probe.free()
 	area.y -= heading_height + 2.0
@@ -2331,7 +2366,7 @@ func _render_crew() -> void:
 		var group_box := VBoxContainer.new()
 		group_box.add_theme_constant_override("separation", 2)
 		_crew_columns.add_child(group_box)
-		group_box.add_child(_label(titles[i], 13, MUTED))
+		group_box.add_child(_label(titles[i], FS_SMALL, MUTED))
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 10)
 		group_box.add_child(row)
@@ -2399,55 +2434,28 @@ static func _crew_columns_needed(stacks: Array, depth: int) -> int:
 		columns += ceili(float(stack.size()) / depth)
 	return columns
 
-## The left column: your VP, then banners, production and symbols, each
-## kind of icon once with its count.
+## The left column: your VP and symbols, then banners and production (as
+## each opponent's). Icons shrink until it all fits (three to a row always:
+## any narrower and a count would wrap under its icon).
 func _render_ledger() -> void:
 	var offset := Vector2(_vp_text.size.x / 2.0 - 40.0, _vp_text.size.y * 0.45)
 	var fresh := _show_gains(_seat, _vp_text, "[center][font_size=%d][b]{vp}[/b][/font_size]\n[font_size=%d]VP[/font_size][/center]" % [_fs(24), _fs(10)], offset)
-	var banners := game.raised_banners(_seat)
-	var cells: Array[String] = []
-	for b in CardDB.BANNERS:
-		if banners[b] > 0:
-			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
-			cells.append(_tip(_banner_tip(b), "%s %s" % [_banner(b, 21), count]))
-	var text := _ledger_section("Banners", cells, "none raised")
-	cells = []
-	var choices: Array[String] = [] # "A or B" slots: too wide for a third, two per row
-	for group: Array in _production_groups(_seat):
-		if (group[0] as Array).size() > 1:
-			# No count: each "A or B" pair is on one card only, so it is 1.
-			choices.append(_tip(_slot_tip(group[0], group[1]), _slot_icons(group[0], 26)))
-		else:
-			cells.append(_tip(_slot_tip(group[0], group[1]), "%s %d" % [_slot_icons(group[0], 26), group[1]]))
-	text += _ledger_section("Produces", cells, "nothing yet" if choices.is_empty() else "", 3, not choices.is_empty())
-	if not choices.is_empty():
-		text += _ledger_section("", choices, "", 2)
-	cells = [_tip(SYMBOL_TIPS["fx-tentacle"], "%s %d" % [_img("fx-tentacle", 20), game.tentacles(_seat)])]
-	var compasses := game.symbol_count(_seat, "compasses")
-	for spec in [["battles", "fx-battle"], ["hooks", "fx-hook"]]:
-		var n := game.symbol_count(_seat, spec[0])
-		if n > 0:
-			cells.append(_tip(SYMBOL_TIPS[spec[1]], "%s %d" % [_img(spec[1], 20), n]))
-	if compasses > 0:
-		cells.append(_tip(SYMBOL_TIPS["fx-compass"] + " %d left this draft." % game.compasses_available(_seat), "%s %d/%d" % [_img("fx-compass", 20), game.compasses_available(_seat), compasses]))
-	text += _ledger_section("Symbols", cells, "")
-	if game.players[_seat].pending_battles > 0:
-		text += _tip(BATTLE_TIP, "[color=#ffb070]Battle pending ×%d[/color]" % game.players[_seat].pending_battles)
-	_ledger_body.text = text
+	_ledger_symbols.text = _grid(_symbol_cells(_seat, 20), 2)
+	var room := _ledger_scroll.size.y - (_ledger_symbols.get_parent() as Control).size.y - 8.0
+	for fit in [[21, 3], [18, 3], [15, 3], [13, 3]]:
+		_ledger_body.text = _stats_text(_seat, fit[0], fit[1], fresh)
+		if room <= 0.0 or _ledger_body.get_content_height() <= room:
+			break
 
 ## A titled grid of `cells` in `columns` (no title: it continues the section
 ## above; `more`: the next one does, so no gap yet).
 func _ledger_section(title: String, cells: Array[String], empty: String, columns: int = 3, more: bool = false) -> String:
 	# A short gap after each section, not a full line.
 	var gap := "" if more else "[font_size=%d] [/font_size]\n" % _fs(4)
-	var text := "" if title.is_empty() else "[color=#8a96a6][font_size=%d]%s[/font_size][/color]\n" % [_fs(13), title]
+	var text := "" if title.is_empty() else "[color=#8a96a6][font_size=%d]%s[/font_size][/color]\n" % [_fs(FS_SMALL), title]
 	if cells.is_empty():
 		return text + ("" if empty.is_empty() else "[color=#8a96a6]%s[/color]\n" % empty) + gap
-	text += "[table=%d]" % columns
-	for cell in cells:
-		# Equal columns, so a wide entry does not push the others apart.
-		text += "[cell expand=1 padding=0,0,6,0]%s[/cell]" % cell
-	return text + "[/table]\n" + gap
+	return text + _grid(cells, columns) + "\n" + gap
 
 ## Hand order: windfall first, then hand, then draft picks.
 func _hand_entries() -> Array:
@@ -2469,6 +2477,13 @@ func _hand_entries() -> Array:
 	for id: int in _hooked_keep:
 		if not pl.hand.has(id):
 			entries.append({"id": id, "hooked": true})
+	if not _hand_order.is_empty():
+		# As you arranged them; the cards since then after, in their order.
+		var key := {}
+		for i in entries.size():
+			var at := _hand_order.find(entries[i].id)
+			key[entries[i].id] = at if at >= 0 else _hand_order.size() + i
+		entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return key[a.id] < key[b.id])
 	return entries
 
 func _render_hand() -> void:
@@ -2476,9 +2491,16 @@ func _render_hand() -> void:
 	var focus_id := -1
 	if is_instance_valid(_hovered_hand) and (_kb_hand or _hovered_hand.get_global_rect().has_point(get_viewport().get_mouse_position())):
 		focus_id = _hovered_hand.card_id
+	# Where each card is now: the rebuilt hand continues from there (a
+	# rebuild without a game change, e.g. picking a card, finds no fresher
+	# poses, and after a reorder the old ones are elsewhere).
+	for view in _hand_views:
+		if is_instance_valid(view) and view.has_meta("placed"):
+			_hand_pose[view.card_id] = {"position": view.position, "rotation": view.rotation_degrees, "scale": view.scale, "shadow": view.shadow}
 	_clear(_hand_area)
 	_hand_views.clear()
 	_hovered_hand = null
+	_drag_view = null
 	var decision: Variant = game.pending.get(_seat)
 	var type: String = decision.type if decision != null else ""
 	var surplus := _surplus() if type == "build" else {}
@@ -2493,12 +2515,19 @@ func _render_hand() -> void:
 			view.set_caption("Drafted")
 			view.mark = CardView.Mark.HIGHLIGHT
 		view.clicked.connect(_on_hand_clicked)
+		view.draggable = true
+		view.drag_moved.connect(_on_hand_drag)
+		view.drag_ended.connect(_on_hand_drop)
 		view.hovered.connect(func(v: CardView) -> void:
+			if _drag_view != null:
+				return
 			_hovered_hand = v
 			_kb_hand = false
 			_sfx.play("card_flip", -20.0, 0.12)
 			_layout_hand())
 		view.unhovered.connect(func(v: CardView) -> void:
+			if _drag_view != null:
+				return
 			if _hovered_hand == v:
 				_hovered_hand = null
 			_layout_hand())
@@ -2598,11 +2627,11 @@ func _layout_hand() -> void:
 	var n := _hand_views.size()
 	if n == 0:
 		return
-	var width := _hand_area.size.x
-	var step := minf(HAND_CARD.x * 0.74, (width - HAND_CARD.x * 2.0) / maxf(n - 1, 1))
-	var total := step * (n - 1) + HAND_CARD.x
-	var x0 := (width - total) / 2.0
-	var focus := _hand_views.find(_hovered_hand)
+	var spacing := _hand_spacing()
+	var x0 := spacing.x
+	var step := spacing.y
+	# While dragging, no card is spread out for a look.
+	var focus := -1 if _drag_view != null else _hand_views.find(_hovered_hand)
 	# The window's bottom edge, in hand area coordinates.
 	var bottom := get_viewport_rect().size.y - _hand_area.get_global_rect().position.y
 	for i in range(n):
@@ -2631,6 +2660,22 @@ func _layout_hand() -> void:
 			target.y = bottom + 4.0 - HAND_CARD.y * (1.0 + HAND_FOCUS_SCALE) / 2.0
 		var scale_to := Vector2.ONE * (HAND_FOCUS_SCALE if hovered else HAND_NEIGHBOUR_SCALE if neighbour else 1.0)
 		var shadow := 0.9 if hovered else 0.35
+		if view == _drag_view:
+			# Held up, following the pointer (x at once; it eases into the
+			# held pose from where it was); the others make room.
+			view.z_index = 200
+			view.position.x = _drag_x
+			if not view.has_meta("held"):
+				view.set_meta("held", true)
+				if view.has_meta("hand_tween"):
+					(view.get_meta("hand_tween") as Tween).kill()
+				var hold := view.create_tween().set_parallel().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+				view.set_meta("hand_tween", hold)
+				hold.tween_property(view, "position:y", 14.0 - 48.0, 0.15)
+				hold.tween_property(view, "rotation_degrees", 0.0, 0.15)
+				hold.tween_property(view, "scale", Vector2.ONE * HAND_NEIGHBOUR_SCALE, 0.15)
+				hold.tween_property(view, "shadow", 0.9, 0.15)
+			continue
 		if not view.has_meta("placed"):
 			# Fresh views (the hand is rebuilt on every refresh) continue from
 			# where the same card was, or snap into place.
@@ -2646,10 +2691,68 @@ func _layout_hand() -> void:
 			view.scale = pose.scale
 			view.shadow = pose.shadow
 		var tween := view.create_tween().set_parallel().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+		view.set_meta("hand_tween", tween)
 		tween.tween_property(view, "position", target, 0.22)
 		tween.tween_property(view, "rotation_degrees", angle, 0.22)
 		tween.tween_property(view, "scale", scale_to, 0.22)
 		tween.tween_property(view, "shadow", shadow, 0.22)
+
+## The hand's first card's left edge and the step between cards: Vector2(x0, step).
+func _hand_spacing() -> Vector2:
+	var n := _hand_views.size()
+	var width := _hand_area.size.x
+	var step := minf(HAND_CARD.x * 0.74, (width - HAND_CARD.x * 2.0) / maxf(n - 1, 1))
+	return Vector2((width - (step * (n - 1) + HAND_CARD.x)) / 2.0, step)
+
+## A hand card dragged: it follows the pointer, and takes the place it is over.
+func _on_hand_drag(view: CardView, at: Vector2) -> void:
+	var origin := _hand_area.get_global_rect().position.x
+	if _drag_view != view:
+		_drag_view = view
+		_drag_grab = at.x - origin - view.position.x
+		_hovered_hand = null
+	_drag_x = at.x - origin - _drag_grab
+	var spacing := _hand_spacing()
+	var index := clampi(roundi((_drag_x - spacing.x) / maxf(spacing.y, 1.0)), 0, _hand_views.size() - 1)
+	var from := _hand_views.find(view)
+	if index != from:
+		_hand_views.remove_at(from)
+		_hand_views.insert(index, view)
+		_hand_area.move_child(view, index)
+		_sfx.play("card_flip", -20.0, 0.12)
+	_layout_hand()
+
+func _on_hand_drop(view: CardView) -> void:
+	if _drag_view != view:
+		return
+	_drag_view = null
+	view.remove_meta("held")
+	_remember_hand_order()
+	_sfx.play("card_place", -14.0)
+	if view.get_global_rect().has_point(get_viewport().get_mouse_position()):
+		_hovered_hand = view
+	_layout_hand()
+
+func _remember_hand_order() -> void:
+	_hand_order.clear()
+	for v in _hand_views:
+		_hand_order.append(v.card_id)
+
+## Shift+←/→: the focused hand card one place over.
+func _shift_hand_card(direction: int) -> bool:
+	var from := _hand_views.find(_hovered_hand)
+	if from < 0:
+		return false
+	var to := clampi(from + direction, 0, _hand_views.size() - 1)
+	if to != from:
+		_hand_views.remove_at(from)
+		_hand_views.insert(to, _hovered_hand)
+		_hand_area.move_child(_hovered_hand, to)
+		_remember_hand_order()
+		_kb_index = to
+		_sfx.play("card_flip", -14.0, 0.12)
+		_layout_hand()
+	return true
 
 func _set_buttons(specs: Array) -> void:
 	_clear(_buttons)
@@ -2828,7 +2931,7 @@ func _build_pay_panel() -> void:
 
 func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary) -> void:
 	_clear(_pay_body)
-	var title := _label("Paying for %s" % card.title, 20, GOLD, true)
+	var title := _label("Paying for %s" % card.title, FS_TITLE, GOLD, true)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_pay_body.add_child(title)
 	# Wide rather than tall (it covers less of the crew): the cost on the
@@ -2852,7 +2955,7 @@ func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary
 		var what: String = CardDB.RESOURCE_NAMES[token]
 		_chip_icon(chip).tooltip_text = "%s: still to pay." % what if payer.is_empty() else "%s, paid by %s." % [what, _payer_text(payer)]
 		row.add_child(chip)
-	var status := _rich(16)
+	var status := _rich(FS_BODY)
 	status.fit_content = true
 	status.autowrap_mode = TextServer.AUTOWRAP_OFF
 	var extra := _overpaid() if result.ok else 0
@@ -2868,7 +2971,7 @@ func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary
 		status.text = "[center][color=#ffe0a0]Pick hand cards to discard[/color][/center]"
 	left.add_child(status)
 	if crew_missing.is_empty():
-		var all_crew := _label("Your crew pays it all.", 15, Color(0.75, 0.95, 0.7))
+		var all_crew := _label("Your crew pays it all.", FS_BODY, Color(0.75, 0.95, 0.7))
 		all_crew.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		left.add_child(all_crew)
 		return
@@ -2890,7 +2993,7 @@ func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary
 			by_way.pair.append("%s + %s" % [_pay_card_name(payer.discards[0]), _pay_card_name(payer.discards[1])])
 		elif kind == "windfall" and by_way.windfall.is_empty():
 			by_way.windfall.append("your Windfall")
-	var rates := _with_tips(_rich(16))
+	var rates := _with_tips(_rich(FS_BODY))
 	rates.fit_content = true
 	rates.autowrap_mode = TextServer.AUTOWRAP_OFF
 	var rules := [
@@ -2914,7 +3017,7 @@ func _render_pay_panel(card: Dictionary, crew_missing: Array, result: Dictionary
 	rates.text = table + "[/table]"
 	right.add_child(rates)
 	if _pay_windfall and not game.unrevealed_slots().is_empty():
-		right.add_child(_label("After Build, you choose where your Windfall goes.", 14, Color(0.85, 0.78, 0.65)))
+		right.add_child(_label("After Build, you choose where your Windfall goes.", FS_SMALL, Color(0.85, 0.78, 0.65)))
 
 ## One cost icon; still to pay, it has a red border.
 ## What pays a cost token, in words (see Payment.evaluate's payers; the
@@ -3020,9 +3123,9 @@ func _place_pay_panel() -> void:
 func _show_overlay(title: String, subtitle: String) -> HBoxContainer:
 	_clear(_overlay_body)
 	_overlay.visible = true
-	_overlay_body.add_child(_label(title, 24, GOLD, true))
+	_overlay_body.add_child(_label(title, FS_TITLE, GOLD, true))
 	if not subtitle.is_empty():
-		var sub := _rich(16)
+		var sub := _rich(FS_BODY)
 		sub.fit_content = true
 		sub.custom_minimum_size.x = 640
 		sub.text = subtitle
@@ -3060,8 +3163,7 @@ func _overlay_buttons(specs: Array) -> void:
 		var button := _button(spec[0], spec[1], spec[2] if spec.size() > 2 else true)
 		if spec.size() > 3 and spec[3]:
 			_primary(button)
-		# Bigger than the action bar's: these are the choice being made.
-		button.add_theme_font_size_override("font_size", _fs(19))
+		# Taller than the action bar's: these are the choice being made.
 		button.custom_minimum_size = Vector2(130, 48)
 		row.add_child(button)
 	# Clear of the cards above: a selected card's glow and the key badges
@@ -3185,7 +3287,7 @@ func _telescope_fan(parent: HBoxContainer, ids: Array) -> void:
 		view.position = Vector2(20.0 + step * k, 6.0 + absf(spread) * 8.0)
 		view.pivot_offset = Vector2(OVERLAY_CARD.x / 2.0, OVERLAY_CARD.y)
 		view.rotation_degrees = spread * 6.0
-		var who := _rich(14)
+		var who := _rich(FS_SMALL)
 		who.fit_content = true
 		who.mouse_filter = MOUSE_FILTER_IGNORE
 		who.custom_minimum_size.x = step + 8.0
@@ -3263,7 +3365,6 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 		var id: int = pl.draft_hand[0]
 		_overlay_card(cards, id, func() -> void: _submit({"pick": id}), true, OVERLAY_CARD)
 		var take := _primary(_button("Take it", func() -> void: _submit({"pick": id})))
-		take.add_theme_font_size_override("font_size", _fs(17))
 		_overlay_corner(take)
 		_auto_take_last(decision, id, take)
 		return
@@ -3286,7 +3387,6 @@ func _render_draft_overlay(decision: Dictionary) -> void:
 		_overlay_corner(_compass_button())
 	if discards > 0:
 		var confirm := _primary(_button("Confirm", func() -> void: _submit({"pick": pick, "discards": drops}), pick >= 0 and drops.size() == discards))
-		confirm.add_theme_font_size_override("font_size", _fs(17))
 		_overlay_corner(confirm)
 
 ## Green like "New game", with the Compass icon, at the top right.
@@ -3299,7 +3399,6 @@ func _compass_button() -> Button:
 	button.icon = load(ICONS + "fx-compass.png") as Texture2D
 	button.add_theme_constant_override("icon_max_width", roundi(24 * ICON_SCALE))
 	button.add_theme_constant_override("h_separation", 8)
-	button.add_theme_font_size_override("font_size", _fs(17))
 	return button
 
 const AUTO_PICK_TIME := 2.5
@@ -5206,7 +5305,9 @@ func _input(event: InputEvent) -> void:
 		return
 	match key:
 		KEY_LEFT, KEY_RIGHT:
-			_move_focus(-1 if key == KEY_LEFT else 1)
+			var direction := -1 if key == KEY_LEFT else 1
+			if not ((event as InputEventKey).shift_pressed and _shift_hand_card(direction)):
+				_move_focus(direction)
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			if get_viewport().gui_get_focus_owner() is BaseButton:
 				return # The focused button takes it.
@@ -5501,12 +5602,12 @@ func _describe(id: int) -> void:
 	var head := "[b]%s[/b]" % card.title
 	if card.vp > 0:
 		head += "   [color=#8a3b12][b]%d VP[/b][/color]" % card.vp
-	_info_text(head, 17)
+	_info_text(head, FS_MAIN)
 
 	var rows: Array = []
 	if card.kind == "infamy":
 		var need := []
-		for b: String in card.cost:
+		for b: String in CardDB.printed_banners(id):
 			need.append(_banner(b, 24))
 		rows.append(["Claim with", _icons(need)])
 	else:
@@ -5526,7 +5627,7 @@ func _describe(id: int) -> void:
 			rows.append(["Banners", _icons(banners)])
 	_info_rows(rows)
 	if card.kind == "infamy" and game != null and game.row.any(func(slot: Dictionary) -> bool: return slot.cards.has(id)):
-		_info_text("[color=#5a4630]Claimed by the first pirate whose banners meet this requirement.[/color]", 14)
+		_info_text("[color=#5a4630]Claimed by the first pirate whose banners meet this requirement.[/color]", FS_SMALL)
 
 	# Effects: an icon column, then the text (wrapping under itself).
 	var effects: Array = []
@@ -5584,8 +5685,8 @@ func _info_rows(rows: Array, alpha: float = 1.0) -> RichTextLabel:
 		return null
 	var text := "[table=2]"
 	for row: Array in rows:
-		text += "[cell padding=0,2,12,2][color=#7a6248][font_size=%d]%s[/font_size][/color][/cell][cell padding=0,2,0,2]%s[/cell]" % [_fs(13), row[0], row[1]]
-	var label := _info_text(text + "[/table]", 15)
+		text += "[cell padding=0,2,12,2][color=#7a6248][font_size=%d]%s[/font_size][/color][/cell][cell padding=0,2,0,2]%s[/cell]" % [_fs(FS_SMALL), row[0], row[1]]
+	var label := _info_text(text + "[/table]", FS_BODY)
 	label.modulate.a = alpha
 	return label
 
@@ -5649,11 +5750,11 @@ func _info_effect(icon: String, text: String) -> void:
 	row.mouse_filter = MOUSE_FILTER_IGNORE
 	row.add_theme_constant_override("separation", 6)
 	_zoom_info.add_child(row)
-	var icon_label := _info_text(icon, 15)
+	var icon_label := _info_text(icon, FS_BODY)
 	icon_label.custom_minimum_size.x = ICON_WIDTH
 	icon_label.size_flags_horizontal = SIZE_SHRINK_BEGIN
 	icon_label.reparent(row)
-	var body := _info_text(text, 15)
+	var body := _info_text(text, FS_BODY)
 	body.custom_minimum_size.x = _zoom_info.custom_minimum_size.x - ICON_WIDTH - 6
 	body.reparent(row)
 

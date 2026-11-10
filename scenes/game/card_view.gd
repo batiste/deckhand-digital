@@ -5,6 +5,9 @@ extends Control
 signal clicked(view: CardView)
 signal hovered(view: CardView)
 signal unhovered(view: CardView)
+## A `draggable` card pulled sideways: where the pointer is, then let go.
+signal drag_moved(view: CardView, at: Vector2)
+signal drag_ended(view: CardView)
 
 enum Mark { NONE, SELECTED, PAYMENT, DISABLED, HIGHLIGHT, FREE, CLAIMABLE }
 
@@ -98,6 +101,12 @@ var dim := false:
 		dim = value
 		_refresh_tint()
 var interactive := true
+## Can be dragged (to reorder the hand): clicks then fire on release.
+var draggable := false
+var dragging := false
+const DRAG_THRESHOLD := 24.0
+const NO_PRESS := Vector2(-1e9, -1e9)
+var _press_at := NO_PRESS
 ## Opacity of the drop shadow under the card (0 = none), for lifted cards.
 var shadow := 0.0:
 	set(value):
@@ -454,6 +463,28 @@ func _gui_input(event: InputEvent) -> void:
 		set_process(true) # lean towards the pointer again
 	if not interactive:
 		return
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		clicked.emit(self)
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if not draggable:
+			if event.pressed:
+				clicked.emit(self)
+				accept_event()
+			return
+		# Draggable: a click on release, unless the card was pulled away.
+		if event.pressed:
+			_press_at = event.global_position
+		elif _press_at != NO_PRESS:
+			_press_at = NO_PRESS
+			if dragging:
+				dragging = false
+				drag_ended.emit(self)
+			else:
+				clicked.emit(self)
+		accept_event()
+	elif event is InputEventMouseMotion and _press_at != NO_PRESS:
+		# A clear sideways pull: a click that slips a little stays a click.
+		var moved: Vector2 = event.global_position - _press_at
+		if not dragging and absf(moved.x) > DRAG_THRESHOLD and absf(moved.x) > absf(moved.y) * 1.5:
+			dragging = true
+		if dragging:
+			drag_moved.emit(self, event.global_position)
 		accept_event()
