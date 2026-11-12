@@ -27,8 +27,10 @@ const CREW_GROUPS := {"basic": "Basic", "advanced": "Advanced", "support": "Supp
 const CREW_MAX_COLUMNS := 6
 const OPP_CARD := Vector2(50, 68)
 const OPP_COLUMN_WIDTH := 340.0
-const OPP_SEAL := Vector2(52, 63) # an opponent's VP seal (yours is 77×93)
-const OPP_ICON := 16 # an opponent's banner and symbol icons (yours: 21, 20)
+const OPP_SEAL := Vector2(52, 63) # an opponent's VP seal (yours: LEDGER_SEAL)
+const OPP_ICON := 16 # an opponent's banner and symbol icons (yours: up to 27 and 30)
+const SYMBOL_GAP := 6 # between your symbols beside the seal
+const LEDGER_SEAL := Vector2(64, 77) # your VP seal: leaves room beside it for the symbols, large
 const OVERLAY_CARD := Vector2(181, 247) # leaves even gaps around the choice
 const OVERLAY_CARD_SMALL := Vector2(135, 184)
 const LEDGER_WIDTH := 216.0
@@ -628,6 +630,10 @@ func _build_ui() -> void:
 	main.add_child(home)
 	var ledger := _panel()
 	_pad(ledger, 16)
+	# Narrower at the sides: room for your symbols, large, beside the seal.
+	var ledger_style := ledger.get_theme_stylebox("panel") as StyleBoxFlat
+	ledger_style.content_margin_left = 10
+	ledger_style.content_margin_right = 10
 	ledger.custom_minimum_size.x = LEDGER_WIDTH
 	home.add_child(ledger)
 	var ledger_scroll := ScrollContainer.new()
@@ -637,20 +643,23 @@ func _build_ui() -> void:
 	_ledger_scroll = ledger_scroll
 	var ledger_v := VBoxContainer.new()
 	ledger_v.size_flags_horizontal = SIZE_EXPAND_FILL
-	ledger_v.add_theme_constant_override("separation", 8)
+	ledger_v.add_theme_constant_override("separation", 18) # the seal's row apart from the rest
 	ledger_scroll.add_child(ledger_v)
 	# Your score on the wax seal, your symbols beside it: as each opponent's.
 	var ledger_head := HBoxContainer.new()
 	ledger_head.add_theme_constant_override("separation", 8)
 	ledger_v.add_child(ledger_head)
-	var vp_seal := _wax_seal(Vector2(77, 93))
+	var vp_seal := _wax_seal(LEDGER_SEAL)
+	vp_seal.size_flags_vertical = SIZE_SHRINK_CENTER
 	ledger_head.add_child(vp_seal)
 	_vp_text = _seal_text(vp_seal)
-	_ledger_symbols = _with_tips(_rich(FS_BODY))
+	_ledger_symbols = _no_wrap(_with_tips(_rich(FS_BODY)))
 	_ledger_symbols.fit_content = true
+	# No wrapping: the label sizes to its grid, so a count never drops under its icon.
+	_ledger_symbols.autowrap_mode = TextServer.AUTOWRAP_OFF
 	_ledger_symbols.size_flags_vertical = SIZE_SHRINK_CENTER
 	ledger_head.add_child(_ledger_symbols)
-	_ledger_body = _with_tips(_rich(FS_BODY))
+	_ledger_body = _no_wrap(_with_tips(_rich(FS_BODY)))
 	_ledger_body.fit_content = true
 	ledger_v.add_child(_ledger_body)
 
@@ -2190,18 +2199,18 @@ func _symbol_cells(p: int, icon_size: int) -> Array[String]:
 		cells.append(_tip(tip, icon if n == 1 else "%s\u00a0%d" % [icon, n]))
 	return cells
 
-## A grid of `cells`, `columns` to a row.
-static func _grid(cells: Array[String], columns: int) -> String:
+## A grid of `cells`, `columns` to a row, `gap` apart (`row_gap` between rows).
+static func _grid(cells: Array[String], columns: int, gap: int = 6, row_gap: int = 0) -> String:
 	var text := "[table=%d]" % columns
 	for cell in cells:
 		# Equal columns, so a wide entry does not push the others apart.
-		text += "[cell expand=1 padding=0,0,6,0]%s[/cell]" % cell
+		text += "[cell expand=1 padding=0,0,%d,%d]%s[/cell]" % [gap, row_gap, cell]
 	return text + "[/table]"
 
 ## A pirate's banners, then production, each kind of icon once with its
 ## count, in grids of `columns`: the same layout for your ledger and for each
 ## opponent. `fresh` banners (just raised) have their count in gold.
-func _stats_text(p: int, icon_size: int, columns: int, fresh: Array = []) -> String:
+func _stats_text(p: int, icon_size: int, columns: int, fresh: Array = [], res_size: int = -1) -> String:
 	var whose := "Your crew" if p == _seat else "Their crew"
 	var banners := game.raised_banners(p)
 	var cells: Array[String] = []
@@ -2209,10 +2218,12 @@ func _stats_text(p: int, icon_size: int, columns: int, fresh: Array = []) -> Str
 		if banners[b] > 0:
 			var count := "[color=#ffd36b][b]%d[/b][/color]" % banners[b] if fresh.has(b) else str(banners[b])
 			cells.append(_tip(_banner_tip(b), "%s\u00a0%s" % [_banner(b, icon_size), count]))
-	var text := _ledger_section("Banners", cells, "none raised", columns)
+	# No captions: the icons say what they are (and their tooltips more).
+	var text := _ledger_section("", cells, "no banners", columns)
 	cells = []
 	var choices: Array[String] = [] # "A or B" slots: too wide for one cell, half as many per row
-	var res_size := icon_size + 4 # resource icons have more margin
+	if res_size < 0:
+		res_size = icon_size + 4 # resource icons have more margin
 	for group: Array in _production_groups(p):
 		var tip := _slot_tip(group[0], group[1]).replace("Your crew", whose)
 		if (group[0] as Array).size() > 1:
@@ -2220,7 +2231,7 @@ func _stats_text(p: int, icon_size: int, columns: int, fresh: Array = []) -> Str
 			choices.append(_tip(tip, _slot_icons(group[0], res_size)))
 		else:
 			cells.append(_tip(tip, "%s\u00a0%d" % [_slot_icons(group[0], res_size), group[1]]))
-	text += _ledger_section("Produces", cells, "nothing yet" if choices.is_empty() else "", columns, not choices.is_empty())
+	text += _ledger_section("", cells, "no production" if choices.is_empty() else "", columns, not choices.is_empty())
 	if not choices.is_empty():
 		text += _ledger_section("", choices, "", maxi(2, columns / 2))
 	if game.players[p].pending_battles > 0:
@@ -2238,6 +2249,13 @@ static func _tip(text: String, bbcode: String) -> String:
 ## A label whose _tip() tooltips show without Godot's dashed underline.
 static func _with_tips(label: RichTextLabel) -> RichTextLabel:
 	label.hint_underlined = false
+	return label
+
+## A label of icon grids that never wraps: Godot may break a line right after
+## an image (even before a no-break space), which drops a count under its
+## icon; unwrapped, each table column is as wide as its widest cell.
+static func _no_wrap(label: RichTextLabel) -> RichTextLabel:
+	label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	return label
 
 static func _banner_tip(banner: String) -> String:
@@ -2309,7 +2327,7 @@ func _render_opponents() -> void:
 			status = "  [color=#8a96a6](thinking…)[/color]"
 		elif game.has_answered(p) and not game.pending.is_empty():
 			status = "  [color=#8fe388]✓ ready[/color]"
-		var about := _with_tips(_rich(FS_MAIN))
+		var about := _no_wrap(_with_tips(_rich(FS_MAIN)))
 		about.fit_content = true
 		about.size_flags_vertical = SIZE_SHRINK_CENTER
 		var symbols := _symbol_cells(p, OPP_ICON)
@@ -2318,7 +2336,7 @@ func _render_opponents() -> void:
 			"" if symbols.is_empty() else "[font_size=%d]%s[/font_size]\n" % [_fs(FS_BODY), "   ".join(symbols)],
 			_fs(FS_SMALL), game.hand_size(p), "windfall ✓" if pl.windfall >= 0 else "no windfall"]
 		head.add_child(about)
-		var summary := _with_tips(_rich(FS_BODY))
+		var summary := _no_wrap(_with_tips(_rich(FS_BODY)))
 		summary.fit_content = true
 		summary.text = _stats_text(p, OPP_ICON, 5, fresh)
 		v.add_child(summary)
@@ -2435,16 +2453,37 @@ static func _crew_columns_needed(stacks: Array, depth: int) -> int:
 	return columns
 
 ## The left column: your VP and symbols, then banners and production (as
-## each opponent's). Icons shrink until it all fits (three to a row always:
-## any narrower and a count would wrap under its icon).
+## each opponent's). Icons shrink until it all fits, in height and width
+## (three to a row always; the labels never wrap, see _no_wrap()).
 func _render_ledger() -> void:
 	var offset := Vector2(_vp_text.size.x / 2.0 - 40.0, _vp_text.size.y * 0.45)
-	var fresh := _show_gains(_seat, _vp_text, "[center][font_size=%d][b]{vp}[/b][/font_size]\n[font_size=%d]VP[/font_size][/center]" % [_fs(24), _fs(10)], offset)
-	_ledger_symbols.text = _grid(_symbol_cells(_seat, 20), 2)
-	var room := _ledger_scroll.size.y - (_ledger_symbols.get_parent() as Control).size.y - 8.0
-	for fit in [[21, 3], [18, 3], [15, 3], [13, 3]]:
-		_ledger_body.text = _stats_text(_seat, fit[0], fit[1], fresh)
-		if room <= 0.0 or _ledger_body.get_content_height() <= room:
+	# Three digits in a smaller size, to stay on the disc.
+	var vp_size := 22 if game.score(_seat) < 100 else 18
+	var fresh := _show_gains(_seat, _vp_text, "[center][font_size=%d][b]{vp}[/b][/font_size][/center]" % _fs(vp_size), offset)
+	# Beside the seal: in two columns (never wrapped), the icons as large as
+	# fit the room there; else one column.
+	var head := _ledger_symbols.get_parent() as HBoxContainer
+	var seal := head.get_child(0) as Control
+	var beside := _ledger_scroll.size.x - seal.size.x - head.get_theme_constant("separation")
+	var fitted := false
+	for icon_size in [30, 29, 28, 26, 24, 22, 20, 18]:
+		_ledger_symbols.text = _grid(_symbol_cells(_seat, icon_size), 2, SYMBOL_GAP, SYMBOL_GAP / 2)
+		if beside <= 0.0 or _ledger_symbols.get_content_width() <= beside:
+			_ledger_symbols.set_meta("icon_size", icon_size)
+			fitted = true
+			break
+	if not fitted:
+		_ledger_symbols.text = _grid(_symbol_cells(_seat, 18), 1, SYMBOL_GAP, SYMBOL_GAP / 2)
+	# Below the seal's row: its height from what is in it now (its laid-out
+	# size is still last frame's).
+	var head_height := maxf(seal.size.y, _ledger_symbols.get_content_height())
+	var room := _ledger_scroll.size.y - head_height - (_ledger_symbols.get_parent().get_parent() as VBoxContainer).get_theme_constant("separation")
+	var width := _ledger_scroll.size.x
+	for fit in [[27, 3], [25, 3], [23, 3], [21, 3], [18, 3], [15, 3], [13, 3]]:
+		# Production a little larger than the banners: it is read the most.
+		_ledger_body.text = _stats_text(_seat, fit[0], fit[1], fresh, fit[0] + 7)
+		if room <= 0.0 or (_ledger_body.get_content_height() <= room and _ledger_body.get_content_width() <= width):
+			_ledger_body.set_meta("icon_size", fit[0])
 			break
 
 ## A titled grid of `cells` in `columns` (no title: it continues the section
@@ -3632,8 +3671,11 @@ func _rank_seal(rank: String, won: bool) -> Control:
 		seal.add_child(rays)
 		seal.move_child(rays, 0)
 	var text := _seal_text(seal)
-	text.add_theme_font_size_override("normal_font_size", _fs(19))
-	text.add_theme_font_size_override("bold_font_size", _fs(19))
+	# Long ranks ("Sovereign of the High Seas") wrap inside the disc.
+	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var rank_size := 19 if rank.length() <= 14 else 17
+	text.add_theme_font_size_override("normal_font_size", _fs(rank_size))
+	text.add_theme_font_size_override("bold_font_size", _fs(rank_size))
 	text.text = "[center][font_size=%d]YOUR RANK[/font_size]\n[b]%s[/b][/center]" % [_fs(12), rank]
 	return seal
 
@@ -3653,7 +3695,7 @@ func _wax_seal(seal_size: Vector2) -> Control:
 
 ## Light text pressed into the seal's disc (above its ribbons).
 func _seal_text(seal: Control) -> RichTextLabel:
-	var text := _rich(16)
+	var text := _no_wrap(_rich(16))
 	text.fit_content = true
 	text.scroll_active = false
 	text.mouse_filter = MOUSE_FILTER_IGNORE

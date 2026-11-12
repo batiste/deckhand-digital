@@ -25,6 +25,17 @@ const DEFAULTS := {
 	"discard_cost": 2.2,     # a card discarded to pay, in cards in hand (they are scarce)
 	"vp_early": 0.4,         # weight of VP (and multipliers) in round 1, rising to 1 by the last
 	"keep_buildable": 0.5,   # what a hand card is worth to keep: its value less its build cost, times this
+	"spend_penalty": 2.0,    # build: extra cost per card discarded to pay, in round 1 (patience: production
+	                         # built later pays for free), falling to nothing in the last round
+	# Card-drawing triggers are valued at what they really draw: matching
+	# cards in hand (if affordable) plus a share of the builds still to come,
+	# at the rate bots really build (tools/trigger_stats.gd checks it).
+	"trigger_builds_per_round": 3.3,
+	"trigger_weight": 1.0,   # weight of what a trigger will draw
+	"trigger_synergy": 0.25, # ... plus this per card-drawing trigger already in the crew
+	"collector_chance": 0.35,# chance a bot plays a game as a collector of card-drawing triggers (it
+	"collector_weight": 1.6, # then weights them this much: optimistic, so it goes for them)
+	"collector_bailout": 3,  # from this round, a collector with no card-drawing trigger gives up
 }
 ## Per-player weights overriding DEFAULTS (bot experiments).
 static var tuning := {}
@@ -137,18 +148,42 @@ static func card_value(game: DeckhandGame, p: int, id: int) -> float:
 			continue
 		var times: int = card.tentacles if trigger.on == "tentacle" else card.banners.count(trigger.on)
 		value += times * _effect_value(trigger.effect, worth)
-	# Its own trigger: on every matching card added later.
+	# Its own trigger: on every matching card added later. Matching cards
+	# already in hand are a sure thing (if the crew can afford them); future
+	# builds are a bet that shrinks as the game runs out.
 	if card.trigger != null:
-		var share := _tentacle_share() if card.trigger.on == "tentacle" else _banner_share(card.trigger.on)
-		var in_hand := 0
-		for h: int in game.players[p].hand:
-			var hc := CardDB.get_card(h)
-			in_hand += hc.tentacles if card.trigger.on == "tentacle" else hc.banners.count(card.trigger.on)
-		value += (in_hand + builds * share) * _effect_value(card.trigger.effect, worth)
+		var synergy: float = param(p, "trigger_synergy") * _draw_triggers(game, p)
+		var weight: float = param(p, "collector_weight" if _is_collector(game, p) else "trigger_weight") + synergy
+		value += trigger_draws(game, p, id) * _effect_value(card.trigger.effect, worth) * weight
 	value += card.compasses * 0.35 * left
 	value += card.tentacles * 0.8
 	# Late game, raw VP is all that matters.
 	return lerpf(value, float(game.card_score(p, id)) + 0.5 * card.vp, progress * progress * 0.5)
+
+## How many times card `id`'s trigger can be expected to fire for `p` if
+## built now: matching cards in hand (as likely as they are affordable),
+## then a share of the builds still to come at the rate bots really build.
+## Its own symbols don't set it off.
+static func trigger_draws(game: DeckhandGame, p: int, id: int) -> float:
+	var trigger: Variant = CardDB.get_card(id).trigger
+	if trigger == null:
+		return 0.0
+	var on: String = trigger.on
+	var in_hand := 0.0
+	var matching := 0
+	for h: int in game.players[p].hand:
+		if h == id:
+			continue
+		var hc := CardDB.get_card(h)
+		var times: int = hc.tentacles if on == "tentacle" else hc.banners.count(on)
+		if times > 0:
+			in_hand += times * _buildable_odds(game, p, h)
+			matching += 1
+	var share := _tentacle_share() if on == "tentacle" else _banner_share(on)
+	var per_round := maxf(param(p, "trigger_builds_per_round"), game.players[p].crew.size() / maxf(game.round_index - 1, 1.0))
+	# The hand cards are among those builds: the rest come from new cards.
+	var builds := maxf(per_round * (rounds_left(game) + 0.5) - matching, 0.0)
+	return in_hand + builds * share
 
 ## What a card in hand is worth to `p`: more early, when it can still be built.
 static func card_worth(game: DeckhandGame, p: int) -> float:
@@ -160,6 +195,41 @@ static func card_worth(game: DeckhandGame, p: int) -> float:
 static func expected_builds(game: DeckhandGame, p: int) -> float:
 	var per_round := maxf(param(p, "builds_per_round"), game.players[p].crew.size() / maxf(game.round_index - 1, 1.0))
 	return per_round * (rounds_left(game) + 0.5)
+
+## Whether `p` plays this game as a collector of card-drawing triggers
+## (decided once per game, so bots vary from game to game). A collector
+## still without one in crew or hand by the `collector_bailout` round
+## gives the strategy up for the rest of the game.
+static func _is_collector(game: DeckhandGame, p: int) -> bool:
+	var pl: Dictionary = game.players[p]
+	if not pl.has("collector"):
+		pl.collector = game.bot_rng.randf() < param(p, "collector_chance")
+	if pl.collector and game.round_index >= param(p, "collector_bailout") \
+			and _draw_triggers(game, p) == 0 and _draw_triggers_in(pl.hand) == 0:
+		pl.collector = false
+	return pl.collector
+
+## How likely `p` is to build card `id` from hand: what the crew can't pay
+## costs discards, and a costly card more often ends up paying instead.
+static func _buildable_odds(game: DeckhandGame, p: int, id: int) -> float:
+	var burden := _cost_burden(game, p, id)
+	if burden <= 1.0:
+		return 1.0
+	if burden <= 2.5:
+		return 0.6
+	return 0.25
+
+## Card-drawing triggers in `p`'s crew.
+static func _draw_triggers(game: DeckhandGame, p: int) -> int:
+	return _draw_triggers_in(game.players[p].crew)
+
+static func _draw_triggers_in(cards: Array) -> int:
+	var n := 0
+	for id: int in cards:
+		var trigger: Variant = CardDB.get_card(id).trigger
+		if trigger != null and EFFECT_CARDS.has(trigger.effect):
+			n += 1
+	return n
 
 static func _effect_value(effect: String, worth: float) -> float:
 	if EFFECT_CARDS.has(effect):
@@ -314,6 +384,12 @@ static func _build(game: DeckhandGame, p: int) -> Dictionary:
 	var crew_slots := game.crew_production_slots(p)
 	var keep := func(id: int) -> float: return keep_value(game, p, id)
 	var windfall_value := INF if pl.windfall < 0 else (0.9 if game.round_index < DeckhandGame.ROUNDS else 0.1)
+	var progress := float(game.round_index - 1) / float(DeckhandGame.ROUNDS - 1)
+	var spend: float = 0.0 if param(p, "legacy") else param(p, "spend_penalty") * (1.0 - progress)
+	# Cards beyond the hand limit are lost at the end of the round: no
+	# patience then, they may as well pay.
+	if game.hand_size(p) > DeckhandGame.HAND_LIMIT:
+		spend = 0.0
 	var best := {}
 	var best_net := -INF
 	for id: int in pl.hand:
@@ -323,9 +399,9 @@ static func _build(game: DeckhandGame, p: int) -> Dictionary:
 			continue
 		var net := card_value(game, p, id)
 		for d: int in plan.discards:
-			net -= keep_value(game, p, d)
+			net -= keep_value(game, p, d) + spend
 		if plan.windfall:
-			net -= windfall_value
+			net -= windfall_value + spend * 2.0
 		if net > best_net:
 			best_net = net
 			best = {"card": id, "discards": plan.discards, "windfall": plan.windfall, "windfall_dest": DeckhandGame.WINDFALL_DECK}
