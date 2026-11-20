@@ -227,6 +227,10 @@ var _pending_sources := {} # cards whose effect waits on a pirate's choice -> li
 var _hooks_waiting := 0 # Hook ceremonies yet to take their stage ticket
 var _band_holds := 0 # bands (shown or queued) that hold the choices
 var _bands_queued := 0 # bands called and not yet gone (holding or not)
+var _hand_shown: Array[int] = [] # the hand's cards as last laid out, in order
+var _build_paying: Array[int] = [] # your build's payment, held in hand until it lands
+var _build_card_shown := -1 # your build last sent to the crew on screen
+var _build_busy := false # your build flying, then its payment burning
 var _hooked_keep := {} # card id -> true: hooked from you, still shown in hand until its tug
 var _row_held := {} # Row slot -> true: revealed, still face down until its round's band shows
 # Battle bands still waiting to show, that later Battles join.
@@ -349,6 +353,9 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_pending_sources.clear()
 	_hooks_waiting = 0
 	_hooked_keep.clear()
+	_build_paying.clear()
+	_build_card_shown = -1
+	_build_busy = false
 	_row_held.clear()
 	_peeked.clear()
 	_announce_batch = null
@@ -2413,13 +2420,19 @@ func _render_crew() -> void:
 	var pl: Dictionary = game.players[_seat]
 	_render_ledger()
 	_clear(_crew_columns)
-	_crew_hint.visible = pl.crew.is_empty()
-	if pl.crew.is_empty():
+	# Your build joins at once, even while the pirates before you in priority
+	# order still add theirs (a Hook can take a while).
+	var crew: Array = pl.crew.duplicate()
+	var built := _build_card_shown
+	if built >= 0 and not crew.has(built) and (_build_busy or pl.built_this_step == built):
+		crew.append(built)
+	_crew_hint.visible = crew.is_empty()
+	if crew.is_empty():
 		return
 	# Grouped by what the cards produce, each group under a small heading.
 	# A deep group continues in a column beside its first.
 	var groups := {}
-	for id: int in pl.crew:
+	for id: int in crew:
 		var group := _crew_group(id)
 		if not groups.has(group):
 			groups[group] = []
@@ -2566,16 +2579,6 @@ func _hand_entries() -> Array:
 		entries.append({"id": id})
 	for id in pl.picks:
 		entries.append({"id": id, "picked": true})
-	# Built, but not in the crew yet (players before you in priority order
-	# are still adding theirs): it stays in hand until its turn comes, then
-	# flies over (else it would vanish, then appear in the crew from nowhere).
-	var built: int = pl.built_this_step
-	if built >= 0 and not pl.crew.has(built) and not pl.hand.has(built):
-		entries.append({"id": built, "building": true})
-	# Hooked from you, but its turn on the table has not come yet.
-	for id: int in _hooked_keep:
-		if not pl.hand.has(id):
-			entries.append({"id": id, "hooked": true})
 	if not _hand_order.is_empty():
 		# As you arranged them; the cards since then after, in their order.
 		var key := {}
@@ -2583,6 +2586,28 @@ func _hand_entries() -> Array:
 			var at := _hand_order.find(entries[i].id)
 			key[entries[i].id] = at if at >= 0 else _hand_order.size() + i
 		entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return key[a.id] < key[b.id])
+	# No longer yours, but still shown in hand where they were: spent on your
+	# build, until it has landed (then they burn); hooked from you, until the
+	# Hook's turn on the table.
+	var held: Array = []
+	for id: int in _build_paying:
+		held.append({"id": id, "paying": true})
+	for id: int in _hooked_keep:
+		held.append({"id": id, "hooked": true})
+	for entry: Dictionary in held:
+		var id: int = entry.id
+		if pl.hand.has(id) or id == pl.windfall:
+			continue
+		var at := 0
+		var before := _hand_shown.find(id)
+		for i in range(before - 1, -1, -1): # after the card left of it
+			var k := entries.find_custom(func(e: Dictionary) -> bool: return e.id == _hand_shown[i])
+			if k >= 0:
+				at = k + 1
+				break
+		if before < 0:
+			at = entries.size() # (never shown: last)
+		entries.insert(at, entry)
 	return entries
 
 func _render_hand() -> void:
@@ -2596,6 +2621,10 @@ func _render_hand() -> void:
 	for view in _hand_views:
 		if is_instance_valid(view) and view.has_meta("placed"):
 			_hand_pose[view.card_id] = {"position": view.position, "rotation": view.rotation_degrees, "scale": view.scale, "shadow": view.shadow}
+	_hand_shown.clear()
+	for view in _hand_views:
+		if is_instance_valid(view):
+			_hand_shown.append(view.card_id)
 	_clear(_hand_area)
 	_hand_views.clear()
 	_hovered_hand = null
@@ -2607,7 +2636,7 @@ func _render_hand() -> void:
 		var id: int = entry.id
 		var view := _card(id, HAND_CARD)
 		view.set_meta("windfall", entry.get("windfall", false))
-		view.set_meta("building", entry.get("building", false) or entry.get("hooked", false))
+		view.set_meta("building", entry.get("paying", false) or entry.get("hooked", false))
 		if entry.get("windfall", false):
 			view.set_caption("Windfall (2 coins)")
 		elif entry.get("picked", false):
@@ -2630,9 +2659,8 @@ func _render_hand() -> void:
 			if _hovered_hand == v:
 				_hovered_hand = null
 			_layout_hand())
-		if entry.get("building", false):
-			view.mark = CardView.Mark.SELECTED
-			view.set_caption("Building")
+		if entry.get("paying", false):
+			view.mark = CardView.Mark.PAYMENT
 		elif type == "" and not _sent_build.is_empty():
 			# Sent, waiting for the others: the build keeps its marks.
 			if entry.get("windfall", false):
@@ -2671,7 +2699,7 @@ func _render_hand() -> void:
 		# Choosing what to build: the cards you cannot pay for are dimmed
 		# (they can still pay for another).
 		if type == "build" and _build_card < 0 and not entry.get("windfall", false) \
-				and not entry.get("building", false) and not _can_afford(id):
+				and not entry.get("paying", false) and not _can_afford(id):
 			view.dim = true
 		_hand_area.add_child(view)
 		_hand_views.append(view)
@@ -4152,6 +4180,8 @@ func _band(title_text: String, color: Color, subtitle: String, delay: float, hol
 			return
 	var ticket := _stage_take()
 	await _stage_wait(ticket)
+	if opts.get("after_landing", false):
+		await _builds_landed() # every build in, the others' too
 	if not is_inside_tree() or not is_same(g, game):
 		return # closed, or a new game started meanwhile (its stage is new)
 	var compose: Callable = opts.get("compose", Callable())
@@ -4591,7 +4621,7 @@ func _await_landing(id: int) -> void:
 		if not is_inside_tree():
 			return
 	var waited := 0.0
-	while not _card_settled(id) and waited < LANDING_TIMEOUT:
+	while (not _card_settled(id) or (_build_busy and id == _build_card_shown)) and waited < LANDING_TIMEOUT:
 		await get_tree().process_frame
 		if not is_inside_tree():
 			return
@@ -4637,6 +4667,40 @@ const LANDING_TIMEOUT := 8.0 # never hold the game on a lost animation
 ## shown mid-table, or flying).
 func _card_settled(id: int) -> bool:
 	return not (_claimed.has(id) or _lost.has(id) or _in_spotlight.has(id) or _motion.is_flying(id))
+
+## Your build, once the game has made it (its "build" event): first the card
+## flies from your hand to your crew, then the cards paid for it burn (the
+## Windfall goes its way), and only then do other effects play (they wait on
+## _build_busy).
+func _start_build(info: Dictionary) -> void:
+	_build_card_shown = info.card
+	_build_paying.assign(info.get("discards", []))
+	if info.get("windfall", -1) >= 0:
+		_build_paying.append(info.windfall)
+	_build_sequence(info.card)
+
+func _build_sequence(built: int) -> void:
+	var g := game
+	_build_busy = true
+	# The refresh lays the card out, and its flight starts a frame later.
+	for _i in range(3):
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	var waited := 0.0
+	while _motion.is_flying(built) and waited < LANDING_TIMEOUT and is_inside_tree():
+		await get_tree().process_frame
+		waited += get_process_delta_time()
+	if not is_inside_tree() or not is_same(g, game):
+		return
+	if not _build_paying.is_empty():
+		_build_paying.clear()
+		_sfx.play("coin", -2.0)
+		_queue_refresh() # out of the hand: they burn (see _animate_cards)
+		await get_tree().create_timer(CardMotion.BURN + 0.25).timeout
+		if not is_inside_tree() or not is_same(g, game):
+			return
+	_build_busy = false
 
 ## Waits until none of your cards is still landing.
 func _landings_done() -> void:
@@ -4851,6 +4915,7 @@ func _spotlight(id: int, from: Dictionary, caption_text: String, key: int, finis
 	var g := game
 	await get_tree().process_frame
 	await _stage_wait(group.ticket)
+	await _builds_landed()
 	if not is_inside_tree() or not is_same(g, game):
 		if is_instance_valid(revealed) and revealed != holder:
 			revealed.queue_free()
@@ -5080,6 +5145,16 @@ func _hook_ceremony(id: int, thief: int, victim: int, source: int = -1) -> void:
 		})
 	_spotlight(id, from, caption, HOOK_SPOT_KEY + ticket, finish, false, tugged, HOOK_HAUL_TIME if tugged != null else 0.85, ticket, source, HOOK_SHOW_TIME)
 
+## A Hook between two other pirates: heard and glowing once the builds
+## have landed.
+func _others_hook(source: int) -> void:
+	var g := game
+	await _builds_landed()
+	if not is_inside_tree() or not is_same(g, game):
+		return
+	_sfx.play("hook", -6.0)
+	_pulse_active(source)
+
 ## Waits until no card is on its way to a crew (yours landing, your build
 ## still to join, any flight to a crew), then a moment more. A card shown
 ## mid-table first (a claim) is not waited for: it needs the stage.
@@ -5092,16 +5167,23 @@ func _crew_settled() -> void:
 		await get_tree().create_timer(CREW_SETTLE_PAUSE).timeout
 
 const CREW_SETTLE_PAUSE := 0.5
+
+## Waits until no card is on its way to a crew (see _crew_moving), with no
+## pause after: every build has fully landed before an effect plays.
+func _builds_landed() -> void:
+	var waited := 0.0
+	while is_inside_tree() and waited < CREW_SETTLE_TIMEOUT and _crew_moving():
+		await get_tree().process_frame
+		waited += get_process_delta_time()
+
 const CREW_SETTLE_TIMEOUT := 6.0
 
 func _crew_moving() -> bool:
 	for gate: Dictionary in _landing:
 		if not (_claimed.has(gate.id) or _in_spotlight.has(gate.id)):
 			return true
-	var pl: Dictionary = game.players[_seat]
-	var built: int = pl.built_this_step
-	if game.phase == DeckhandGame.Phase.BUILD and built >= 0 and not pl.crew.has(built):
-		return true # your build joins once the cards before it are in
+	if _build_busy:
+		return true # your build: its flight, then the cards paid burning
 	var flights := _motion.in_flight()
 	for fid: int in flights:
 		if flights[fid].zone in ["crew", "opponents"]:
@@ -5170,6 +5252,7 @@ func _receive_gift(id: int, giver: int) -> void:
 	var g := game
 	var ticket := _stage_take()
 	await _stage_wait(ticket)
+	await _builds_landed()
 	if not is_inside_tree() or not is_same(g, game):
 		return
 	await get_tree().create_timer(GIFT_PAUSE).timeout
@@ -5297,8 +5380,10 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"pass":
 			_sfx.play("pass", volume)
 		"build":
-			if info.paid > 0:
-				_sfx.play("coin", volume - 2.0)
+			if p == _seat and info.has("card"):
+				_start_build(info)
+			elif info.paid > 0:
+				_sfx.play("coin", volume - 2.0) # yours as its payment burns
 		"crew":
 			if not CardDB.is_infamy(info.card):
 				_sfx.play("card_place", volume)
@@ -5334,8 +5419,7 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 			if _seat in [p, info.target] and info.has("card"):
 				_hook_ceremony(info.card, p, info.target, info.get("source", -1)) # sounds on its turn
 			else:
-				_sfx.play("hook", -6.0)
-				_pulse_active(info.get("source", -1))
+				_others_hook(info.get("source", -1))
 		"hook_give":
 			if p == _seat:
 				_gifts[info.card] = true

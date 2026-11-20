@@ -629,14 +629,17 @@ func _task_build_resolve(_task: Dictionary) -> void:
 		for d: int in action.get("discards", []):
 			pl.hand.erase(d)
 			discard_pile.append(d)
+		var windfall: int = -1
 		if action.get("windfall", false):
+			windfall = pl.windfall
 			_discard_windfall(p, action.get("windfall_dest", WINDFALL_DECK))
 		pl.built_this_step = action.card
 		builders.append(p)
 		var paid: int = action.get("discards", []).size()
 		_log("%s builds %s%s." % [_name(p), CardDB.title(action.card),
 			"" if paid == 0 else " (discarding %d)" % paid])
-		event.emit("build", {"player": p, "paid": paid})
+		event.emit("build", {"player": p, "paid": paid, "card": action.card,
+			"discards": action.get("discards", []).duplicate(), "windfall": windfall})
 	_answers.clear()
 	_answered.clear()
 
