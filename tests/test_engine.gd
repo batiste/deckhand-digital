@@ -201,6 +201,12 @@ func test_telescope_stack() -> void:
 	game.submit(0, {"swap": true})
 	check(game.row[slot].cards == [deck_card, windfall], "the swap replaces that card only")
 	check(game.infamy_deck.has(original), "the swapped card is in the Infamy deck")
+	# Or slot and card at once (the table's single window).
+	game._start_telescope(0, -1)
+	if game.pending[0].type == "telescope_slot":
+		check(game.submit(0, {"slot": slot, "index": 5}) != "", "no sixth card in the stack")
+		check(game.submit(0, {"slot": slot, "index": 1}) == "", "slot and card together")
+		check(game.pending[0].type == "telescope_swap" and game.pending[0].row_card == windfall, "straight to the swap")
 
 ## A build chosen can be taken back while another pirate still chooses.
 func test_take_back_build() -> void:

@@ -783,11 +783,23 @@ func _telescope_on_slot(p: int, slot: int, source: int) -> void:
 func _ask_telescope_swap(p: int, slot: int, index: int, source: int) -> void:
 	_ask(p, {"type": "telescope_swap", "slot": slot, "index": index, "row_card": row[slot].cards[index], "deck_card": infamy_deck[-1], "source": source})
 
+## Action: {"slot"}, and optionally {"index"}: which card of a stacked slot
+## (else that is asked next).
 func _validate_telescope_slot(_p: int, decision: Dictionary, action: Dictionary) -> String:
-	return "" if decision.slots.has(action.get("slot", -1)) else "Choose an unrevealed Row slot"
+	var slot: int = action.get("slot", -1)
+	if not decision.slots.has(slot):
+		return "Choose an unrevealed Row slot"
+	if action.has("index"):
+		var index: int = action.index
+		if index < 0 or index >= row[slot].cards.size():
+			return "Choose a card of the stack"
+	return ""
 
 func _answer_telescope_slot(p: int, decision: Dictionary, action: Dictionary) -> void:
-	_telescope_on_slot(p, action.slot, decision.source)
+	if action.has("index"):
+		_ask_telescope_swap(p, action.slot, action.index, decision.source)
+	else:
+		_telescope_on_slot(p, action.slot, decision.source)
 
 ## Action: {"index"}, the card's place in the slot's stack (0: the Row's own).
 func _validate_telescope_card(_p: int, decision: Dictionary, action: Dictionary) -> String:

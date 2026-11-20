@@ -27,8 +27,12 @@ not licensed for any use.
 
 ## What is not covered
 
-- **Sound effects** (`assets/sfx/`): synthesized by `tools/make_sfx.py`, under
-  the MIT License like the code.
+- **Sound effects** (`assets/sfx/`): most come from the
+  [400+ Sounds Pack](https://ci.itch.io/400-sounds-pack) by Chequered Ink,
+  under its own license (free for any use, but the unaltered sounds may not
+  be sold or redistributed as game assets). The rest (`bell`, `battle`,
+  `card_flip`, `reveal`, `telescope`, the `hum_*` loops) are synthesized by
+  `tools/make_sfx.py`, under the MIT License like the code.
 - **Fonts** (`scenes/shared/fonts/`): under their own licenses, included next
   to each font. Signika and IM FELL English: SIL Open Font License
   1.1. DejaVu: the Bitstream Vera / DejaVu license.

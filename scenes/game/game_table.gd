@@ -350,6 +350,7 @@ func _begin(seats: Array, seed_value: int, options: Dictionary) -> void:
 	_hooks_waiting = 0
 	_hooked_keep.clear()
 	_row_held.clear()
+	_peeked.clear()
 	_announce_batch = null
 	_result_batch = null
 	_stage_now = _stage_next # whatever was queued is dropped
@@ -393,6 +394,8 @@ func _process(delta: float) -> void:
 
 func _submit(action: Dictionary) -> void:
 	var current: Variant = game.pending.get(_seat)
+	if current != null and current.type == "telescope_swap" and not action.get("swap", false):
+		_peeked[current.row_card] = true # left in the Row: you know it now
 	if current != null and current.type == "build" and not action.get("pass", false):
 		_sent_build = {"card": action.card, "pay": action.get("discards", []).duplicate(), "windfall": action.get("windfall", false),
 			"dest": action.get("windfall_dest", DeckhandGame.WINDFALL_DECK), "decision": current}
@@ -924,7 +927,7 @@ const CREDITS := [
 	["Iconography", ["Louise Fayt", "Batiste Bieler"]],
 	["Playtesting", ["Jessica Gibbons", "Gaël Nardin", "Jonathan Bieler", "Eduard Schäli", "Riccardo Zoppello", "Lucas Clark", "the Break My Game community", "and many others"]],
 	["Music", ["Composed with Suno"]],
-	["Sound effects", ["Synthesised for this game"]],
+	["Sound effects", ["[url=https://ci.itch.io/400-sounds-pack]400+ Sounds Pack by Chequered Ink[/url]", "and some synthesised for this game"]],
 	["Typefaces", ["Signika by Anna Giedryś", "IM FELL English by Igino Marini", "DejaVu Sans"]],
 	["Engine", ["Made with the Godot Engine"]],
 ]
@@ -1181,6 +1184,8 @@ func _build_credits() -> void:
 		body.custom_minimum_size.x = 440
 		body.add_theme_color_override("default_color", Color(1, 0.93, 0.8))
 		body.text = "[center][color=#c9a76a][font_size=%d]%s[/font_size][/color]\n%s[/center]" % [_fs(14), section[0].to_upper(), "  ·  ".join(names)]
+		body.meta_clicked.connect(func(meta: Variant) -> void: OS.shell_open(str(meta)))
+		body.meta_underlined = true
 		grid.add_child(body)
 	# The publisher: its logo on a light plate (it is blue on white) and a
 	# link to the game's page.
@@ -2012,7 +2017,7 @@ func _render_row() -> void:
 		if not slot.revealed or _row_held.has(i):
 			# Face down: stacked cards show, each a little up and to the right.
 			var count: int = slot.cards.size()
-			var step := Vector2(5, -5)
+			var step := Vector2(9, -9) if count == 2 else Vector2(6, -6) # wider apart when few
 			var back_size := (ROW_CARD * (1.0 - step.x * (count - 1) / ROW_CARD.y)).round()
 			var pile := Control.new()
 			pile.custom_minimum_size = ROW_CARD
@@ -2021,17 +2026,26 @@ func _render_row() -> void:
 			var picking := _picking_windfall()
 			var story := _slot_story(i)
 			for k in count:
-				var back := _card(slot.cards[k], back_size, false)
-				back.tooltip_text = story
+				# Those you know (yours, or seen with a Telescope): face up, a
+				# little dimmed as the slot is not revealed yet. Its zoom tells
+				# what it is.
+				var mine := _known_in_row(slot.cards[k])
+				var back := _card(slot.cards[k], back_size, mine)
+				if mine:
+					back.modulate = Color(0.82, 0.82, 0.82)
+					if k == count - 1:
+						back.add_child(_revealed_tag())
+				else:
+					back.tooltip_text = story
 				if picking:
 					# Where your Windfall may go: click the slot to stack it.
 					back.clicked.connect(func(_v: CardView) -> void: _pick_windfall(i))
 					back.pickable = k == count - 1
 				back.position = Vector2((ROW_CARD.x - back_size.x) / 2.0, ROW_CARD.y - back_size.y) + step * k - Vector2(step.x * (count - 1) / 2.0, 0)
 				if count > 1:
-					if k == count - 1:
-						back.set_caption("×%d" % count)
 					back.add_child(_card_rim(back_size))
+					if k == count - 1:
+						back.add_child(_count_badge(count))
 				pile.add_child(back)
 			continue
 		# Cards revealed together: a cascade in the slot's usual height. The
@@ -2056,6 +2070,52 @@ func _render_row() -> void:
 				view.mark = CardView.Mark.CLAIMABLE
 			view.set_requirement(_banners_met(_seat, id))
 			stack.add_child(view)
+
+## A small round badge with `count` in it, on the bottom right corner of
+## the card it is added to: how many cards a Row slot holds.
+func _count_badge(count: int) -> PanelContainer:
+	var diameter := 26.0
+	var badge := PanelContainer.new()
+	badge.mouse_filter = MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.05, 0.02, 0.92)
+	style.border_color = GOLD
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(int(diameter / 2.0))
+	badge.add_theme_stylebox_override("panel", style)
+	var label := _label(str(count), FS_SMALL, GOLD, true)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge.add_child(label)
+	badge.custom_minimum_size = Vector2(diameter, diameter)
+	badge.set_anchors_preset(PRESET_BOTTOM_RIGHT)
+	# A little over the corner, like a sticker.
+	badge.offset_left = -diameter + 6.0
+	badge.offset_top = -diameter + 6.0
+	badge.offset_right = 6.0
+	badge.offset_bottom = 6.0
+	return badge
+
+## "Revealed" across the middle of a Row card you know (but others do not
+## see yet).
+func _revealed_tag() -> PanelContainer:
+	var tag := PanelContainer.new()
+	tag.mouse_filter = MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.05, 0.02, 0.82)
+	style.border_color = Color(GOLD, 0.7)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(5)
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
+	tag.add_theme_stylebox_override("panel", style)
+	tag.add_child(_label("Revealed", FS_SMALL, GOLD, true))
+	tag.set_anchors_preset(PRESET_CENTER)
+	tag.grow_horizontal = GROW_DIRECTION_BOTH
+	tag.grow_vertical = GROW_DIRECTION_BOTH
+	return tag
 
 ## A faint gold rim around a face-down card, so each card of a stack shows.
 func _card_rim(card_size: Vector2) -> Panel:
@@ -3286,20 +3346,8 @@ func _render_choice_overlay(decision: Dictionary) -> void:
 			var cards := _show_overlay("Draw 3, keep 1", "From %s: keep one card, the other two are discarded." % CardDB.title(decision.source))
 			for id: int in decision.cards:
 				_overlay_card(cards, id, func() -> void: _submit({"card": id}))
-		"telescope_slot":
-			var cards := _show_overlay("Telescope", "Choose a face-down Row slot to look at.")
-			for slot: int in decision.slots:
-				var stack: Array = game.row[slot].cards
-				var view := _overlay_card(cards, stack[-1], func() -> void: _submit({"slot": slot}), false)
-				view.set_caption("Round %d" % (slot + 1) if stack.size() == 1 else "Round %d · %d cards" % [slot + 1, stack.size()])
-		"telescope_card":
-			var cards := _show_overlay("Telescope", "Round %d's slot holds %d cards: choose the one to look at." % [decision.slot + 1, decision.cards.size()])
-			_telescope_fan(cards, decision.cards)
-		"telescope_swap":
-			var cards := _show_overlay("Telescope", "Left: the face-down card for round %d. Right: the top of the Infamy deck. Swap them?" % (decision.slot + 1))
-			_card_into(cards, decision.row_card).set_caption("In the Row")
-			_card_into(cards, decision.deck_card).set_caption("Infamy deck")
-			_overlay_buttons([["Keep the Row", func() -> void: _submit({"swap": false})], ["Swap", func() -> void: _submit({"swap": true})]])
+		"telescope_slot", "telescope_card", "telescope_swap":
+			_render_telescope(decision)
 		"telescope_place":
 			var cards := _show_overlay("Telescope", "Last round: you may place the top Infamy card face up in the Row, in slot %d." % (game.place_slot() + 1))
 			_card_into(cards, decision.card)
@@ -3311,28 +3359,148 @@ func _render_choice_overlay(decision: Dictionary) -> void:
 				specs.append(["%s (%d cards)" % [game.players[q].name, game.players[q].hand.size()], func() -> void: _submit({"target": q})])
 			_overlay_buttons(specs)
 
-## The cards of a stacked Row slot, fanned out (the Row's own card on the
-## left), each with who put it there underneath.
-func _telescope_fan(parent: HBoxContainer, ids: Array) -> void:
-	var n := ids.size()
-	var step := OVERLAY_CARD.x * 0.72
+## The Telescope, in one window: the face-down Row cards fanned out on the
+## left (each with its round, and who put it there), the top Infamy card on
+## the right. Pick a Row card: it turns face up, then swap them or not.
+func _render_telescope(decision: Dictionary) -> void:
+	var looking: bool = decision.type == "telescope_swap"
+	var subtitle := "Choose a face-down Row card to look at. On the right, the top of the Infamy deck: you may swap them."
+	if looking:
+		subtitle = "Round %d's card, beside the top of the Infamy deck. Swap them?" % (decision.slot + 1)
+	var cards := _show_overlay("Telescope", subtitle)
+	cards.add_theme_constant_override("separation", 0)
+
+	# One group per face-down round, side by side; a stacked round's cards
+	# fanned within its group.
+	var groups: Array = [] # [slot, its cards]
+	for slot: int in game.unrevealed_slots():
+		groups.append([slot, game.row[slot].cards])
+	var round_gap := 26.0
+	var card_size := OVERLAY_CARD
+	if _telescope_width(groups, card_size, round_gap) > 860.0:
+		card_size = OVERLAY_CARD_SMALL
+	var stack_step := card_size.x * 0.42
+	var top := 30.0 # room for the names above the cards
 	var fan := Control.new()
-	fan.custom_minimum_size = Vector2(OVERLAY_CARD.x + step * (n - 1) + 40.0, OVERLAY_CARD.y + 46.0)
-	parent.add_child(fan)
-	for k in n:
-		var id: int = ids[k]
-		var spread := k - (n - 1) / 2.0
-		var view := _overlay_card(fan, id, func() -> void: _submit({"index": k}), false)
-		view.position = Vector2(20.0 + step * k, 6.0 + absf(spread) * 8.0)
-		view.pivot_offset = Vector2(OVERLAY_CARD.x / 2.0, OVERLAY_CARD.y)
-		view.rotation_degrees = spread * 6.0
-		var who := _rich(FS_SMALL)
-		who.fit_content = true
-		who.mouse_filter = MOUSE_FILTER_IGNORE
-		who.custom_minimum_size.x = step + 8.0
-		who.position = Vector2(20.0 + step * k + (OVERLAY_CARD.x - who.custom_minimum_size.x) / 2.0, OVERLAY_CARD.y + 18.0)
-		who.text = "[center]%s[/center]" % _row_origin(id)
-		fan.add_child(who)
+	fan.custom_minimum_size = Vector2(_telescope_width(groups, card_size, round_gap) + 24.0, top + card_size.y + 32.0)
+	cards.add_child(fan)
+	var x := 12.0
+	for group: Array in groups:
+		var slot: int = group[0]
+		var stack: Array = group[1]
+		var m := stack.size()
+		for k in m:
+			var id: int = stack[k]
+			var chosen: bool = looking and slot == decision.slot and k == decision.index
+			var spread := k - (m - 1) / 2.0
+			var view: CardView
+			# The cards you know (yours, or seen before): face up.
+			var known := chosen or _known_in_row(id)
+			if looking:
+				view = _card_into(fan, id, card_size)
+				view.set_card(id, known)
+				view.modulate = Color.WHITE if chosen else Color(0.6, 0.6, 0.6)
+				view.z_index = 1 if chosen else 0
+			elif decision.type == "telescope_card" and slot != decision.slot:
+				view = _card_into(fan, id, card_size)
+				view.set_card(id, known)
+				view.modulate = Color(0.6, 0.6, 0.6)
+			elif decision.type == "telescope_card":
+				view = _overlay_card(fan, id, func() -> void: _submit({"index": k}), known, card_size)
+			else:
+				view = _overlay_card(fan, id, func() -> void: _submit({"slot": slot, "index": k}), known, card_size)
+			# The same cards are in the Row: these ones stay put, they do
+			# not fly (from the Row, or the deck) each time the dialog redraws.
+			view.set_meta("no_motion", true)
+			if chosen and _telescope_turned != id:
+				_telescope_turned = id
+				_turn_over(view)
+			var card_x := x + stack_step * k
+			view.position = Vector2(card_x, top + absf(spread) * 5.0 - (8.0 if chosen else 0.0))
+			view.pivot_offset = Vector2(card_size.x / 2.0, card_size.y)
+			view.rotation_degrees = 0.0 if chosen else spread * 5.0
+			# Who put it there, above the card.
+			var owner := _row_owner(id)
+			if not owner.is_empty():
+				_fan_label(fan, card_x + card_size.x / 2.0, 0.0, card_size.x + 10.0, owner)
+		# The round, under its cards.
+		var group_width := card_size.x + stack_step * (m - 1)
+		_fan_label(fan, x + group_width / 2.0, top + card_size.y + 6.0, group_width, "[b]Round %d[/b]" % (slot + 1))
+		x += group_width + round_gap
+
+	var gap := Label.new()
+	gap.text = "⇄"
+	gap.custom_minimum_size.x = 100.0
+	gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	gap.size_flags_vertical = SIZE_SHRINK_CENTER
+	gap.add_theme_font_size_override("font_size", _fs(FS_TITLE) * 2)
+	gap.add_theme_color_override("font_color", GOLD)
+	gap.modulate.a = 1.0 if looking else 0.5
+	cards.add_child(gap)
+
+	var deck := MarginContainer.new()
+	deck.size_flags_vertical = SIZE_SHRINK_BEGIN
+	deck.add_theme_constant_override("margin_top", 10)
+	cards.add_child(deck)
+	var deck_card: int = decision.deck_card if looking else game.infamy_deck[-1]
+	var top_card := _card_into(deck, deck_card)
+	top_card.set_caption("Infamy deck")
+	top_card.set_meta("no_motion", true)
+	if not looking:
+		_telescope_turned = -1
+
+	if looking:
+		_overlay_buttons([["Leave as is", func() -> void: _submit({"swap": false})], ["Swap", func() -> void: _submit({"swap": true})]])
+
+## The Row card turned over in the Telescope (so it turns over only once).
+var _telescope_turned := -1
+## Face-down Row cards you looked at with a Telescope: you know them.
+var _peeked := {}
+
+## Turns `view` over in place: its back, then its face.
+func _turn_over(view: CardView) -> void:
+	var id := view.card_id
+	view.set_card(id, false)
+	view.scale.x = 1.0
+	var turn := view.create_tween()
+	turn.tween_property(view, "scale:x", 0.0, 0.12).set_ease(Tween.EASE_IN)
+	turn.tween_callback(func() -> void: view.set_card(id, true))
+	turn.tween_property(view, "scale:x", 1.0, 0.12).set_ease(Tween.EASE_OUT)
+
+## A centered line of text, `width` wide, centered on `center_x`, over (or
+## under) cards of the Telescope's fan.
+func _fan_label(fan: Control, center_x: float, y: float, width: float, bbcode: String) -> void:
+	var label := _rich(FS_SMALL)
+	label.fit_content = true
+	label.mouse_filter = MOUSE_FILTER_IGNORE
+	label.custom_minimum_size.x = width
+	label.position = Vector2(center_x - width / 2.0, y)
+	label.text = "[center]%s[/center]" % bbcode
+	fan.add_child(label)
+
+## How wide the Telescope's rounds are side by side, with `card_size` cards.
+static func _telescope_width(groups: Array, card_size: Vector2, gap: float) -> float:
+	var width := -gap
+	for group: Array in groups:
+		width += card_size.x + card_size.x * 0.42 * (group[1].size() - 1) + gap
+	return width
+
+## Whether you know face-down Row card `id`: you put it there, or looked
+## at it with a Telescope.
+func _known_in_row(id: int) -> bool:
+	if _peeked.has(id):
+		return true
+	var origin: Dictionary = game.row_origins.get(id, {})
+	return not origin.is_empty() and origin.player == _seat
+
+## Above a face-down Row card in the Telescope: who put it there ("" if it
+## came with the Row).
+func _row_owner(id: int) -> String:
+	var origin: Dictionary = game.row_origins.get(id, {})
+	if origin.is_empty():
+		return ""
+	var p: int = origin.player
+	return "You" if p == _seat else _who(p)
 
 ## Row slot `slot` face down: who put each of its cards there (bottom first),
 ## for its tooltip. Public: stacking and swapping are done in the open.
@@ -3353,16 +3521,6 @@ func _slot_story(slot: int) -> String:
 	if cards.size() > 1:
 		lines.append("All are revealed together at the start of round %d." % (slot + 1))
 	return "\n".join(lines)
-
-## Who put a face-down Row card there, as shown under the Telescope's fan.
-func _row_origin(id: int) -> String:
-	var origin: Dictionary = game.row_origins.get(id, {})
-	if origin.is_empty():
-		return "Row card"
-	var p: int = origin.player
-	if origin.via == "swap":
-		return "Swapped in by you" if p == _seat else "Swapped in by %s" % _who(p)
-	return "Your Windfall" if p == _seat else "%s's Windfall" % _who(p)
 
 ## Puts the pending choice aside (or brings it back) without changing it.
 func _toggle_overlay() -> void:
@@ -3505,7 +3663,8 @@ func _show_finale() -> void:
 func _build_finale() -> void:
 	var winners := game.winners()
 	var won := winners.has(_seat)
-	_sfx.play("victory" if won else "defeat")
+	if not won: # a win has the end music alone
+		_sfx.play("defeat")
 	_finale = CanvasLayer.new()
 	_finale.layer = 7
 	add_child(_finale)
@@ -3805,7 +3964,7 @@ func _capture_cards() -> Dictionary:
 	for id: int in flying:
 		poses[id] = flying[id].pose
 	for view in _card_views:
-		if is_instance_valid(view) and view.is_inside_tree() and view.is_visible_in_tree() and not poses.has(view.card_id) and not _in_spotlight.has(view.card_id) and not _fresh.has(view.card_id):
+		if is_instance_valid(view) and view.is_inside_tree() and view.is_visible_in_tree() and not view.has_meta("no_motion") and not poses.has(view.card_id) and not _in_spotlight.has(view.card_id) and not _fresh.has(view.card_id):
 			var pose := CardMotion.pose_of(view, view.face_up)
 			pose.zone = _zone_of(view)
 			poses[view.card_id] = pose
@@ -3857,7 +4016,7 @@ func _animate_cards(snapshot: Dictionary) -> void:
 	var moving: Array[CardView] = []
 	var continuing: Array[CardView] = []
 	for view in _card_views:
-		if not view.is_visible_in_tree():
+		if not view.is_visible_in_tree() or view.has_meta("no_motion"):
 			continue
 		present[view.card_id] = true
 		if _in_spotlight.has(view.card_id):
@@ -3936,6 +4095,7 @@ func _animate_cards(snapshot: Dictionary) -> void:
 			queued[deck] = count + 1
 			if anchors.has(deck):
 				_motion.fly(view.card_id, anchors[deck], to, {"target": view, "zone": zone, "delay": count * 0.07})
+				_sfx.play_at("card_deal", count * 0.07, -6.0)
 			else:
 				view.modulate.a = 1.0
 		else:
@@ -4309,8 +4469,7 @@ func _deal_from_supply(ids: Array) -> void:
 	for id: int in ids:
 		_in_spotlight.erase(id)
 		_fresh[id] = true # on the table all along, hidden: not "stayed put"
-	_queue_refresh()
-	_sfx.play("card_deal", -2.0)
+	_queue_refresh() # each card sounds as it is dealt
 
 # --- Active cards: a halo while a card's effect resolves --------------------
 
@@ -5128,8 +5287,10 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 		"reveal":
 			pass # sounded when the Row shows it (see "round_start")
 		"deal":
-			# Another pirate's redraw is played quietly.
-			_sfx.play("card_deal", -2.0 if p == _seat else -12.0)
+			# Yours sound card by card as they are dealt; another pirate's
+			# redraw is played quietly, once.
+			if p != _seat:
+				_sfx.play("card_deal", -12.0)
 		"draft_pass":
 			_sfx.play("card_deal", -9.0)
 			_hands_passed = true
@@ -5161,8 +5322,8 @@ func _on_game_event(kind: String, info: Dictionary) -> void:
 				for id: int in info.cards:
 					_in_spotlight[id] = true
 				_landing[-1].draws.append({"source": info.get("source", -1), "cause": info.get("cause", -1), "cards": info.cards})
-			else:
-				_sfx.play("card_deal", volume - 4.0)
+			elif p != _seat:
+				_sfx.play("card_deal", volume - 4.0) # yours sound as they are dealt
 		"telescope":
 			_sfx.play("telescope", volume)
 			if info.has("placed"):
@@ -5229,7 +5390,10 @@ func _on_hand_clicked(view: CardView) -> void:
 	var id := view.card_id
 	if decision.type == "build" and _windfall_step:
 		return # choosing where the Windfall goes (or back to the payment)
-	_sfx.play("card_flip", -6.0)
+	# A card picked to pay with sounds like coins; anything else, a card flip.
+	var paying: bool = decision.type == "build" and _build_card >= 0 and id != _build_card \
+		and (not _pay_windfall if is_windfall else not _pay.has(id))
+	_sfx.play("coin" if paying else "card_flip", -6.0)
 	_confirming = "" # changing the choice: ask again if need be
 	match decision.type:
 		"build":
@@ -5279,6 +5443,8 @@ func _auto_pay() -> void:
 		return
 	_pay.assign(plan.discards)
 	_pay_windfall = plan.windfall
+	if not plan.discards.is_empty() or plan.windfall:
+		_sfx.play("coin", -6.0)
 	_render_hand()
 	_render_action()
 
@@ -5554,7 +5720,10 @@ func _show_overlay_focus() -> void:
 		if not is_instance_valid(view) or not _overlay.is_ancestor_of(view):
 			continue
 		var focused := view.card_id == _kb_card and view.interactive
-		view.z_index = 1 if focused else 0
+		# Cards that cannot be chosen keep their own order (the card a
+		# Telescope looks at stays in front of its stack).
+		if view.interactive:
+			view.z_index = 1 if focused else 0
 		view.shadow = 0.9 if focused else 0.0
 		view.focused = focused
 		view.lifted = focused
@@ -5562,9 +5731,27 @@ func _show_overlay_focus() -> void:
 
 # --- Zoom and log -----------------------------------------------------------
 
+## How long the pointer rests on a hand or draft card before its tooltip shows.
+const TIP_DELAY := 0.5
+## The card waiting out TIP_DELAY before its tooltip shows.
+var _tip_pending: CardView
+
 func _on_card_hovered(view: CardView, from_keyboard: bool = false) -> void:
+	_tip_pending = null
 	if not view.face_up or view.card_id <= 0:
 		return
+	# Hand and draft cards are big enough to read: their tooltip waits a
+	# moment, unless one is already up (sliding along the fan).
+	var tip_up := _zoom_panel.visible and _zoom_panel.modulate.a > 0.5
+	if not from_keyboard and not tip_up and (_hand_views.has(view) or _overlay.is_ancestor_of(view)):
+		_tip_pending = view
+		await get_tree().create_timer(TIP_DELAY).timeout
+		if _tip_pending != view or not is_instance_valid(view) or not view.is_inside_tree():
+			return
+		_tip_pending = null
+	_show_card_tip(view, from_keyboard)
+
+func _show_card_tip(view: CardView, from_keyboard: bool) -> void:
 	# A hand card is already shown enlarged, and a big copy of a choice card
 	# would hide the others: show only the rules.
 	var in_hand := _hand_views.has(view)
@@ -5607,7 +5794,7 @@ func _show_zoom() -> void:
 		_zoom_panel.modulate.a = 0.0
 		_zoom_panel.visible = true
 	var fade := _zoom_panel.create_tween()
-	fade.tween_property(_zoom_panel, "modulate:a", 1.0, 0.1)
+	fade.tween_property(_zoom_panel, "modulate:a", 1.0, 0.15)
 	_zoom_panel.set_meta("fade", fade)
 
 func _hide_zoom(at_once: bool = false) -> void:
@@ -5622,6 +5809,8 @@ func _hide_zoom(at_once: bool = false) -> void:
 	_zoom_panel.set_meta("fade", fade)
 
 func _on_card_unhovered(view: CardView) -> void:
+	if _tip_pending == view:
+		_tip_pending = null
 	if _zoom_card.card_id == view.card_id:
 		_hide_zoom()
 

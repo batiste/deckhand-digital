@@ -155,7 +155,7 @@ Zip the Windows, Linux and Web folders to share them. Notes:
 
 ```sh
 node tools/build_cards.js   # cards.en.js -> data/cards.json
-python3 tools/make_sfx.py   # synthesizes assets/sfx/*.wav
+python3 tools/make_sfx.py   # synthesizes the generated assets/sfx/*.wav
 ```
 
 ## Credits
@@ -166,7 +166,7 @@ python3 tools/make_sfx.py   # synthesizes assets/sfx/*.wav
 - **Iconography:** Louise Fayt, Batiste Bieler
 - **Playtesting:** Jessica Gibbons, Gaël Nardin, Jonathan Bieler, Eduard Schäli, Riccardo Zoppello, Lucas Clark, the Break My Game community, and many others
 - **Music:** composed with Suno
-- **Sound effects:** synthesised by `tools/make_sfx.py`
+- **Sound effects:** [400+ Sounds Pack](https://ci.itch.io/400-sounds-pack) by Chequered Ink, and a few synthesised by `tools/make_sfx.py`
 - **Typefaces:** Signika by Anna Giedryś, and IM FELL English by Igino Marini (titles), under the SIL Open Font License; DejaVu Sans (symbols), under the Bitstream Vera / DejaVu license (each license is next to its font in `scenes/shared/fonts/`)
 - **Engine:** [Godot Engine](https://godotengine.org)
 
